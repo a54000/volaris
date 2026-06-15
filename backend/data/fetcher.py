@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 from datetime import date, timedelta
+import warnings
 
 import numpy as np
 import pandas as pd
@@ -65,16 +66,18 @@ def fetch_price_history(
         return {symbol: _generate_mock_history(symbol, start_date, end_date) for symbol in symbols}
 
     try:
-        data = yf.download(
-            tickers=symbols,
-            start=start_date.isoformat(),
-            end=(end_date + timedelta(days=1)).isoformat(),
-            interval="1d",
-            group_by="ticker",
-            auto_adjust=False,
-            progress=False,
-            threads=True,
-        )
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", FutureWarning)
+            data = yf.download(
+                tickers=symbols,
+                start=start_date.isoformat(),
+                end=(end_date + timedelta(days=1)).isoformat(),
+                interval="1d",
+                group_by="ticker",
+                auto_adjust=False,
+                progress=False,
+                threads=True,
+            )
     except Exception:
         return {symbol: _generate_mock_history(symbol, start_date, end_date) for symbol in symbols}
 
@@ -96,7 +99,7 @@ def _estimate_turnover_ratio(volume: pd.Series) -> pd.Series:
 
 
 def compute_stock_analytics(history: pd.DataFrame, symbol: str) -> StockAnalytics:
-    df = history.copy()
+    df = pd.DataFrame(history).copy(deep=True)
     df["log_return"] = np.log(df["Close"] / df["Close"].shift(1))
     df["turnover"] = df["Close"] * df["Volume"]
     df["rolling_vol_20d"] = df["log_return"].rolling(20).std() * np.sqrt(252)

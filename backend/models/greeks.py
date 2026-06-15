@@ -3,9 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from math import sqrt
 
-from scipy.stats import norm
-
 from backend.models.bsm import compute_d1_d2
+from backend.models.normal import normal_cdf, normal_pdf
 
 
 @dataclass
@@ -24,12 +23,12 @@ def black_scholes_greeks(
     volatility: float,
 ) -> GreeksResult:
     d1, _ = compute_d1_d2(spot, strike, time_to_expiry, risk_free_rate, volatility)
-    pdf_d1 = norm.pdf(d1)
+    pdf_d1 = normal_pdf(d1)
 
     if option_type == "call":
-        delta = norm.cdf(d1)
+        delta = normal_cdf(d1)
     elif option_type == "put":
-        delta = norm.cdf(d1) - 1.0
+        delta = normal_cdf(d1) - 1.0
     else:
         raise ValueError("option_type must be 'call' or 'put'.")
 

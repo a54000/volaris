@@ -4,10 +4,9 @@ from fastapi import FastAPI, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 
-from backend.data.fetcher import build_market_snapshot
 from backend.exports.excel import build_workbook_bytes
 from backend.exports.report import build_report_bytes
-from backend.services.analytics import build_options_analytics, build_portfolio_analytics, build_risk_analytics
+from backend.services.analytics import build_options_analytics, build_portfolio_analytics, build_risk_analytics, get_snapshot_bundle
 
 app = FastAPI(
     title="FRAM Risk Analytics API",
@@ -31,12 +30,14 @@ def healthcheck() -> dict[str, str]:
 
 @app.get("/api/run")
 def run_pipeline(months: int = Query(default=6, ge=1, le=24)) -> dict:
-    return build_market_snapshot(months=months)
+    snapshot, _, _ = get_snapshot_bundle(months=months)
+    return snapshot
 
 
 @app.get("/api/summary")
 def summary(months: int = Query(default=6, ge=1, le=24)) -> dict:
-    return build_market_snapshot(months=months)
+    snapshot, _, _ = get_snapshot_bundle(months=months)
+    return snapshot
 
 
 @app.get("/api/options")

@@ -4,12 +4,11 @@ from io import BytesIO
 
 from docx import Document
 
-from backend.data.fetcher import build_market_snapshot
-from backend.services.analytics import build_options_analytics, build_portfolio_analytics, build_risk_analytics
+from backend.services.analytics import build_options_analytics, build_portfolio_analytics, build_risk_analytics, get_snapshot_bundle
 
 
 def build_report_bytes(months: int = 6, risk_free_rate: float = 0.07) -> bytes:
-    summary = build_market_snapshot(months=months)
+    summary, _, _ = get_snapshot_bundle(months=months)
     options_data = build_options_analytics(months=months, risk_free_rate=risk_free_rate)
     portfolio_data = build_portfolio_analytics(months=months, risk_free_rate=risk_free_rate)
     risk_data = build_risk_analytics(months=months)
@@ -43,7 +42,7 @@ def build_report_bytes(months: int = 6, risk_free_rate: float = 0.07) -> bytes:
         )
         for contract in symbol_block["contracts"][:3]:
             document.add_paragraph(
-                f"{contract['label']}: market proxy {contract['market_price_proxy']:.4f}, "
+                f"{contract['label']}: market {contract['market_price']:.4f} ({contract['market_price_source']}), "
                 f"BSM hist {contract['bsm_historical_vol_price']:.4f}, BSM GARCH {contract['bsm_garch_vol_price']:.4f}.",
                 style="List Bullet 2",
             )
@@ -65,7 +64,7 @@ def build_report_bytes(months: int = 6, risk_free_rate: float = 0.07) -> bytes:
         )
 
     document.add_heading("Limitations", level=1)
-    document.add_paragraph("Live NSE option-chain market prices are not yet integrated in this scaffold.")
+    document.add_paragraph("Live NSE option-chain market prices use a resilient fetch path with a theoretical-price fallback when NSE data is unavailable.")
     document.add_paragraph("Shares outstanding and float estimates are currently proxied for turnover ratio calculations.")
 
     buffer = BytesIO()

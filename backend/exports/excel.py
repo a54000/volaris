@@ -17,7 +17,7 @@ def build_workbook_bytes(months: int = 6, risk_free_rate: float = 0.07) -> bytes
     portfolio_data = build_portfolio_analytics(months=months, risk_free_rate=risk_free_rate)
     risk_data = build_risk_analytics(months=months)
 
-    summary_sheet.append(["Symbol", "Contract", "Strike", "Market Proxy", "BSM Hist", "BSM GARCH"])
+    summary_sheet.append(["Symbol", "Contract", "Strike", "Expiry", "Market Price", "Market Source", "BSM Hist", "BSM GARCH"])
     for cell in summary_sheet[1]:
         cell.font = Font(bold=True)
     for symbol_block in options_data["symbols"]:
@@ -27,7 +27,9 @@ def build_workbook_bytes(months: int = 6, risk_free_rate: float = 0.07) -> bytes
                     symbol_block["symbol"],
                     contract["label"],
                     contract["strike"],
-                    contract["market_price_proxy"],
+                    contract["expiry_date"],
+                    contract["market_price"],
+                    contract["market_price_source"],
                     contract["bsm_historical_vol_price"],
                     contract["bsm_garch_vol_price"],
                 ]

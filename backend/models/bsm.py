@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from math import exp, log, sqrt
 
-from scipy.stats import norm
+from backend.models.normal import normal_cdf
 
 
 @dataclass
@@ -54,9 +54,9 @@ def black_scholes_price(
     discount = exp(-risk_free_rate * time_to_expiry)
 
     if option_type == "call":
-        price = spot * norm.cdf(d1) - strike * discount * norm.cdf(d2)
+        price = spot * normal_cdf(d1) - strike * discount * normal_cdf(d2)
     elif option_type == "put":
-        price = strike * discount * norm.cdf(-d2) - spot * norm.cdf(-d1)
+        price = strike * discount * normal_cdf(-d2) - spot * normal_cdf(-d1)
     else:
         raise ValueError("option_type must be 'call' or 'put'.")
 

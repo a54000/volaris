@@ -4,7 +4,8 @@ from dataclasses import dataclass
 
 import numpy as np
 import pandas as pd
-from scipy.stats import norm
+
+from backend.models.normal import inverse_normal_cdf
 
 
 @dataclass
@@ -16,7 +17,7 @@ class VarResult:
 
 
 def compute_parametric_var(portfolio_value: float, daily_volatility: float, confidence_level: float) -> float:
-    z_score = norm.ppf(confidence_level)
+    z_score = inverse_normal_cdf(confidence_level)
     return float(abs(portfolio_value * daily_volatility * z_score))
 
 

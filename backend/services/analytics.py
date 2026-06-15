@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 from dataclasses import asdict
+from functools import partial
 
 import numpy as np
 import pandas as pd
 
+from backend.data.fno import FNO_EQUITY_SYMBOLS
+from backend.data.options import fetch_live_option_quotes
 from backend.data.fetcher import build_market_snapshot, fetch_price_history
 from backend.models.bsm import black_scholes_price
 from backend.models.greeks import black_scholes_greeks
@@ -12,6 +15,14 @@ from backend.models.var import build_var_profile, classify_volatility_regime
 from backend.portfolio.constructor import default_strategy
 from backend.portfolio.hedger import delta_hedge_shares, liquidity_adjusted_hedge_shares
 from backend.portfolio.scenarios import build_scenarios
+from backend.services.cache import TTLCache
+
+
+ANALYTICS_CACHE = TTLCache()
+SNAPSHOT_TTL_SECONDS = 300.0
+OPTIONS_TTL_SECONDS = 180.0
+PORTFOLIO_TTL_SECONDS = 180.0
+RISK_TTL_SECONDS = 180.0
 
 
 def _snapshot_by_symbol(months: int) -> tuple[dict, dict[str, dict], dict[str, pd.DataFrame]]:
@@ -19,6 +30,14 @@ def _snapshot_by_symbol(months: int) -> tuple[dict, dict[str, dict], dict[str, p
     histories = fetch_price_history(months=months)
     by_symbol = {row["symbol"]: row for row in snapshot["all_stocks"]}
     return snapshot, by_symbol, histories
+
+
+def get_snapshot_bundle(months: int = 6) -> tuple[dict, dict[str, dict], dict[str, pd.DataFrame]]:
+    return ANALYTICS_CACHE.get_or_set(
+        ("snapshot_bundle", months),
+        SNAPSHOT_TTL_SECONDS,
+        partial(_snapshot_by_symbol, months),
+    )
 
 
 def _option_definitions(spot: float) -> list[dict]:
@@ -32,19 +51,49 @@ def _option_definitions(spot: float) -> list[dict]:
     ]
 
 
-def build_options_analytics(months: int = 6, risk_free_rate: float = 0.07) -> dict:
-    snapshot, by_symbol, _ = _snapshot_by_symbol(months)
-    selected_symbols = [row["symbol"] for row in snapshot["liquid_bucket"][:2] + snapshot["illiquid_bucket"][:2]]
+def _select_option_symbols(snapshot: dict) -> list[tuple[str, str]]:
+    selected: list[tuple[str, str]] = []
+    seen: set[str] = set()
+
+    for bucket_name, rows in (("liquid", snapshot["liquid_bucket"]), ("illiquid", snapshot["illiquid_bucket"])):
+        for row in rows:
+            symbol = row["symbol"]
+            if symbol not in FNO_EQUITY_SYMBOLS or symbol in seen:
+                continue
+            selected.append((symbol, bucket_name))
+            seen.add(symbol)
+            if len(selected) >= 4:
+                return selected
+
+    for row in snapshot["all_stocks"]:
+        symbol = row["symbol"]
+        if symbol not in FNO_EQUITY_SYMBOLS or symbol in seen:
+            continue
+        bucket_name = "liquid" if any(item["symbol"] == symbol for item in snapshot["liquid_bucket"]) else "illiquid"
+        selected.append((symbol, bucket_name))
+        seen.add(symbol)
+        if len(selected) >= 4:
+            break
+
+    return selected
+
+
+def _build_options_analytics_uncached(months: int = 6, risk_free_rate: float = 0.07) -> dict:
+    snapshot, by_symbol, _ = get_snapshot_bundle(months)
+    selected_symbols = _select_option_symbols(snapshot)
     options_output: list[dict] = []
 
-    for symbol in selected_symbols:
+    for symbol, bucket_name in selected_symbols:
         stock = by_symbol[symbol]
         spot = stock["latest_close"]
         historical_vol = stock["latest_realized_vol_20d"] or stock["garch_annualized_volatility"]
         garch_vol = stock["garch_forecast_volatility"] or stock["garch_annualized_volatility"]
+        definitions = _option_definitions(spot)
+        live_fetch = fetch_live_option_quotes(symbol, definitions)
+        live_quotes = live_fetch.quotes
 
         contracts = []
-        for definition in _option_definitions(spot):
+        for definition in definitions:
             time_to_expiry = definition["maturity_days"] / 365.0
             hist_quote = black_scholes_price(
                 definition["option_type"],
@@ -62,13 +111,20 @@ def build_options_analytics(months: int = 6, risk_free_rate: float = 0.07) -> di
                 risk_free_rate,
                 max(garch_vol, 1e-6),
             )
+            live_quote = live_quotes.get((definition["option_type"], definition["maturity_days"]))
             contracts.append(
                 {
                     "label": definition["label"],
                     "option_type": definition["option_type"],
-                    "strike": round(definition["strike"], 2),
+                    "strike": round(live_quote.strike if live_quote is not None else definition["strike"], 2),
                     "maturity_days": definition["maturity_days"],
-                    "market_price_proxy": round(garch_quote.price * 1.02, 4),
+                    "expiry_date": live_quote.expiry_date if live_quote is not None else None,
+                    "market_price": round(live_quote.last_price, 4) if live_quote and live_quote.last_price is not None else round(garch_quote.price * 1.02, 4),
+                    "market_price_source": live_quote.source if live_quote is not None else "proxy",
+                    "market_price_status": live_quote.source_status if live_quote is not None else "fallback",
+                    "market_implied_volatility": round(live_quote.implied_volatility / 100.0, 6) if live_quote and live_quote.implied_volatility is not None else None,
+                    "market_volume": live_quote.volume if live_quote is not None else None,
+                    "market_open_interest": live_quote.open_interest if live_quote is not None else None,
                     "bsm_historical_vol_price": round(hist_quote.price, 4),
                     "bsm_garch_vol_price": round(garch_quote.price, 4),
                 }
@@ -77,18 +133,35 @@ def build_options_analytics(months: int = 6, risk_free_rate: float = 0.07) -> di
         options_output.append(
             {
                 "symbol": symbol,
+                "bucket": bucket_name,
                 "spot": round(spot, 4),
                 "historical_volatility": round(historical_vol, 6),
                 "garch_volatility": round(garch_vol, 6),
+                "market_data_source": "nse_with_proxy_fallback",
+                "market_data_status": live_fetch.status,
+                "market_data_detail": live_fetch.detail,
                 "contracts": contracts,
             }
         )
 
-    return {"months": months, "risk_free_rate": risk_free_rate, "symbols": options_output}
+    return {
+        "months": months,
+        "risk_free_rate": risk_free_rate,
+        "selection_policy": "fno_filtered_liquidity_rank",
+        "symbols": options_output,
+    }
 
 
-def build_portfolio_analytics(months: int = 6, risk_free_rate: float = 0.07) -> dict:
-    snapshot, _, _ = _snapshot_by_symbol(months)
+def build_options_analytics(months: int = 6, risk_free_rate: float = 0.07) -> dict:
+    return ANALYTICS_CACHE.get_or_set(
+        ("options", months, round(risk_free_rate, 6)),
+        OPTIONS_TTL_SECONDS,
+        partial(_build_options_analytics_uncached, months, risk_free_rate),
+    )
+
+
+def _build_portfolio_analytics_uncached(months: int = 6, risk_free_rate: float = 0.07) -> dict:
+    snapshot, _, _ = get_snapshot_bundle(months)
     chosen = snapshot["liquid_bucket"][:1] + snapshot["illiquid_bucket"][:1]
     portfolios: list[dict] = []
 
@@ -132,8 +205,16 @@ def build_portfolio_analytics(months: int = 6, risk_free_rate: float = 0.07) -> 
     return {"months": months, "risk_free_rate": risk_free_rate, "portfolios": portfolios}
 
 
-def build_risk_analytics(months: int = 6) -> dict:
-    snapshot, by_symbol, histories = _snapshot_by_symbol(months)
+def build_portfolio_analytics(months: int = 6, risk_free_rate: float = 0.07) -> dict:
+    return ANALYTICS_CACHE.get_or_set(
+        ("portfolio", months, round(risk_free_rate, 6)),
+        PORTFOLIO_TTL_SECONDS,
+        partial(_build_portfolio_analytics_uncached, months, risk_free_rate),
+    )
+
+
+def _build_risk_analytics_uncached(months: int = 6) -> dict:
+    snapshot, by_symbol, histories = get_snapshot_bundle(months)
     selected = snapshot["liquid_bucket"][:1] + snapshot["illiquid_bucket"][:1]
     risk_rows: list[dict] = []
 
@@ -168,3 +249,11 @@ def build_risk_analytics(months: int = 6) -> dict:
         for row in risk_rows
     ]
     return {"months": months, "comparison_table": comparison_table, "details": risk_rows}
+
+
+def build_risk_analytics(months: int = 6) -> dict:
+    return ANALYTICS_CACHE.get_or_set(
+        ("risk", months),
+        RISK_TTL_SECONDS,
+        partial(_build_risk_analytics_uncached, months),
+    )
