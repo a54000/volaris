@@ -29,6 +29,18 @@ export async function fetchRisk(months) {
   return data;
 }
 
+export async function fetchScreener(months = 6) {
+  const { data } = await api.get("/api/screener", { params: { months } });
+  return data;
+}
+
+export async function refreshCache(months) {
+  const { data } = await api.post("/api/cache/refresh", null, {
+    params: typeof months === "number" ? { months } : {},
+  });
+  return data;
+}
+
 export function buildDownloadUrl(kind, months, riskFreeRate) {
   const params = new URLSearchParams({ months: String(months) });
   if (typeof riskFreeRate === "number") {

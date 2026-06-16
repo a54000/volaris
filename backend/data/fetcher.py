@@ -41,7 +41,7 @@ def _generate_mock_history(symbol: str, start: date, end: date) -> pd.DataFrame:
     opens = closes * (1 + rng.normal(0.0, 0.004, len(dates)))
     highs = np.maximum(opens, closes) * (1 + rng.uniform(0.001, 0.02, len(dates)))
     lows = np.minimum(opens, closes) * (1 - rng.uniform(0.001, 0.02, len(dates)))
-    return pd.DataFrame(
+    df = pd.DataFrame(
         {
             "Open": opens,
             "High": highs,
@@ -51,6 +51,8 @@ def _generate_mock_history(symbol: str, start: date, end: date) -> pd.DataFrame:
         },
         index=dates,
     )
+    df.attrs["source"] = "fallback"
+    return df
 
 
 def fetch_price_history(
@@ -89,7 +91,9 @@ def fetch_price_history(
             history = pd.DataFrame()
         if history.empty:
             history = _generate_mock_history(symbol, start_date, end_date)
-        histories[symbol] = history[["Open", "High", "Low", "Close", "Volume"]].dropna()
+        cleaned = history[["Open", "High", "Low", "Close", "Volume"]].dropna().copy()
+        cleaned.attrs["source"] = history.attrs.get("source", "live")
+        histories[symbol] = cleaned
     return histories
 
 

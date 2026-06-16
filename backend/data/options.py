@@ -43,7 +43,7 @@ class LiveOptionQuote:
 
 @dataclass
 class OptionFetchResult:
-    quotes: dict[tuple[str, int], LiveOptionQuote]
+    quotes: dict[tuple[str, int, float], LiveOptionQuote]
     status: str
     detail: str | None = None
 
@@ -148,10 +148,11 @@ def fetch_live_option_quotes(symbol: str, definitions: list[dict], timeout: floa
         return OptionFetchResult(quotes={}, status="fallback", detail=type(exc).__name__)
 
     rows = payload.get("records", {}).get("data", [])
-    results: dict[tuple[str, int], LiveOptionQuote] = {}
+    results: dict[tuple[str, int, float], LiveOptionQuote] = {}
     for definition in definitions:
-        key = (definition["option_type"], definition["maturity_days"])
-        quote = _closest_quote(rows, float(definition["strike"]), definition["option_type"], int(definition["maturity_days"]))
+        requested_strike = float(definition["strike"])
+        key = (definition["option_type"], definition["maturity_days"], requested_strike)
+        quote = _closest_quote(rows, requested_strike, definition["option_type"], int(definition["maturity_days"]))
         if quote is not None:
             results[key] = quote
     status = "live" if results else "fallback"

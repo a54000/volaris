@@ -32,3 +32,9 @@ class TTLCache:
     def clear(self) -> None:
         with self._lock:
             self._entries.clear()
+
+    def clear_prefix(self, prefix: tuple) -> None:
+        with self._lock:
+            keys_to_remove = [key for key in self._entries if key[: len(prefix)] == prefix]
+            for key in keys_to_remove:
+                self._entries.pop(key, None)

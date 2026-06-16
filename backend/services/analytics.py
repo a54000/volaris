@@ -40,6 +40,22 @@ def get_snapshot_bundle(months: int = 6) -> tuple[dict, dict[str, dict], dict[st
     )
 
 
+def clear_analytics_cache(months: int | None = None) -> dict[str, str]:
+    if months is None:
+        ANALYTICS_CACHE.clear()
+        return {"status": "cleared", "scope": "all"}
+
+    prefixes = [
+        ("snapshot_bundle", months),
+        ("options", months),
+        ("portfolio", months),
+        ("risk", months),
+    ]
+    for prefix in prefixes:
+        ANALYTICS_CACHE.clear_prefix(prefix)
+    return {"status": "cleared", "scope": f"months={months}"}
+
+
 def _option_definitions(spot: float) -> list[dict]:
     return [
         {"label": "ATM Call 30D", "option_type": "call", "strike": spot, "maturity_days": 30},

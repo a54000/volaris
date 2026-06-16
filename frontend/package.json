@@ -10,11 +10,9 @@
   },
   "dependencies": {
     "axios": "^1.11.0",
-    "plotly.js-dist-min": "^3.1.0",
     "react": "^19.1.1",
     "react-dom": "^19.1.1",
-    "recharts": "^3.1.2",
-    "react-plotly.js": "^2.6.0"
+    "recharts": "^3.1.2"
   },
   "devDependencies": {
     "@vitejs/plugin-react": "^5.0.2",
