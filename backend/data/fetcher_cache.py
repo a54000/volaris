@@ -6,7 +6,7 @@ from pathlib import Path
 
 BASE_DIR = Path(__file__).resolve().parents[2]
 CACHE_DIR = BASE_DIR / "backend" / "data" / "fetcher_cache"
-STALE_SECONDS = 300
+STALE_SECONDS = 960  # 16 min — matches 15-min cron with 1 min overlap
 
 CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
