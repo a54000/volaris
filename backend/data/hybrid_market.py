@@ -98,6 +98,11 @@ def _call_quote_provider(target: object, symbol: str) -> dict | None:
 def _fetch_nse_stock_quote(symbol: str) -> tuple[dict | None, str | None]:
     bare_symbol = symbol.replace(".NS", "")
 
+    from backend.data.fetcher_cache import get_stock_quote
+    cached = get_stock_quote(symbol)
+    if cached is not None:
+        return cached, "fetcher_cache"
+
     if NSEClient is not None:
         try:
             client = NSEClient()

@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 import os
 
-from fastapi import FastAPI, Query
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 
@@ -80,7 +80,7 @@ def _check_yfinance_on_startup() -> None:
         logger.warning("yfinance_connectivity: check failed (%s) — stock history will fall back to synthetic data", exc)
 
 
-@app.get("/health")
+@app.get("/api/health")
 def healthcheck() -> dict[str, str]:
     angel_ok = False
     try:

@@ -137,6 +137,22 @@ def fetch_live_option_quotes(symbol: str, definitions: list[dict], timeout: floa
     if httpx is None:
         return OptionFetchResult(quotes={}, status="unavailable", detail="httpx_not_installed")
 
+    from backend.data.fetcher_cache import get_option_chain
+    cached_payload = get_option_chain(symbol)
+    if cached_payload is not None:
+        rows = cached_payload.get("records", {}).get("data", [])
+        if rows:
+            results: dict[tuple[str, int, float], LiveOptionQuote] = {}
+            for definition in definitions:
+                requested_strike = float(definition["strike"])
+                key = (definition["option_type"], definition["maturity_days"], requested_strike)
+                quote = _closest_quote(rows, requested_strike, definition["option_type"], int(definition["maturity_days"]))
+                if quote is not None:
+                    results[key] = quote
+            status = "live" if results else "fallback"
+            detail = "matched_contracts" if results else "no_contract_match"
+            return OptionFetchResult(quotes=results, status=status, detail=detail)
+
     normalized_symbol = _normalize_symbol(symbol)
     try:
         with httpx.Client(headers=DEFAULT_HEADERS, timeout=timeout, follow_redirects=True) as client:

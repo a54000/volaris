@@ -195,6 +195,17 @@ def _closest_contract(records: list[AngelInstrument], strike: float, maturity_da
 
 
 def fetch_live_option_quotes_angel(symbol: str, definitions: list[dict]) -> AngelFetchResult:
+    from backend.data.fetcher_cache import get_angel_quotes
+    cached = get_angel_quotes(symbol)
+    if cached is not None:
+        quotes: dict[tuple[str, int, float], AngelQuote] = {}
+        for entry in cached:
+            key = (entry["option_type"], entry["maturity_days"], entry["strike"])
+            quotes[key] = AngelQuote(**{k: v for k, v in entry.items() if k != "key"})
+        if quotes:
+            return AngelFetchResult(quotes=quotes, status="live", detail="fetcher_cache")
+        return AngelFetchResult(quotes={}, status="fallback", detail="fetcher_cache_empty")
+
     try:
         records = _load_master()
         client = _login_client()
