@@ -48,11 +48,18 @@ SYMBOLS = [
     "TATACONSUM.NS", "PIDILITIND.NS", "BEL.NS", "TRENT.NS", "TECHM.NS",
 ]
 TRACKED_SYMBOLS = [
-    "RELIANCE.NS", "HDFCBANK.NS", "TCS.NS", "INFY.NS", "BAJFINANCE.NS",
-    "ICICIBANK.NS", "KOTAKBANK.NS", "AXISBANK.NS", "ITC.NS", "SBIN.NS",
-    "BHARTIARTL.NS", "LT.NS", "TATAMOTORS.NS", "MARUTI.NS", "HCLTECH.NS",
+    "RELIANCE.NS", "TCS.NS", "HDFCBANK.NS", "INFY.NS", "ICICIBANK.NS",
+    "HINDUNILVR.NS", "ITC.NS", "SBIN.NS", "BHARTIARTL.NS", "KOTAKBANK.NS",
+    "BAJFINANCE.NS", "LT.NS", "WIPRO.NS", "AXISBANK.NS", "TITAN.NS",
+    "ASIANPAINT.NS", "MARUTI.NS", "HCLTECH.NS", "SUNPHARMA.NS", "ONGC.NS",
+    "NTPC.NS", "POWERGRID.NS", "M&M.NS", "TATAMOTORS.NS", "ULTRACEMCO.NS",
+    "NESTLEIND.NS", "BAJAJFINSV.NS", "JSWSTEEL.NS", "TATASTEEL.NS", "ADANIPORTS.NS",
+    "COALINDIA.NS", "GRASIM.NS", "INDUSINDBK.NS", "DRREDDY.NS", "BRITANNIA.NS",
+    "CIPLA.NS", "APOLLOHOSP.NS", "TECHM.NS", "HEROMOTOCO.NS", "HDFCLIFE.NS",
+    "SBILIFE.NS", "DIVISLAB.NS", "BAJAJ-AUTO.NS", "EICHERMOT.NS", "HINDALCO.NS",
+    "TATACONSUM.NS", "PIDILITIND.NS", "BEL.NS", "TRENT.NS", "HAL.NS",
 ]
-BATCH_SIZE = 3  # Angel symbols per cron run (avoids rate limits)
+BATCH_SIZE = 5  # Angel symbols per cron run (avoids rate limits)
 BATCH_STATE_FILE = "/tmp/fram-fetcher-batch.txt"
 
 VM_URL = os.getenv("VM_URL", "https://volaris.hrgp.in")
@@ -132,13 +139,21 @@ def login_angel():
     return client
 
 
-def fetch_angel_option_quotes(client, symbol: str) -> list[dict]:
-    """Fetch ALL option contract LTPs for a given equity via Angel One."""
+def fetch_angel_option_quotes(client, symbol: str, current_price: float | None = None) -> list[dict]:
+    """Fetch option LTPs for ATM + 8 OTM strikes only (avoids rate limits)."""
     bare = symbol.replace(".NS", "")
     print(f"  Downloading scrip master ...")
     master = _download_master()
     contracts = _filter_option_contracts(master, bare)
-    print(f"  Found {len(contracts)} option contracts for {bare}")
+
+    if current_price is not None and contracts:
+        lo = current_price * 0.70
+        hi = current_price * 1.30
+        before = len(contracts)
+        contracts = [c for c in contracts if _parse_strike(c.get("strike")) and lo <= _parse_strike(c.get("strike")) <= hi]
+        print(f"  {before} contracts, filtered to {len(contracts)} at strikes {lo:.0f}-{hi:.0f} (spot {current_price})")
+    else:
+        print(f"  Found {len(contracts)} option contracts for {bare}")
 
     if not contracts:
         return []
@@ -327,7 +342,11 @@ def main() -> None:
         print(f"   Batch {batch_index}: {len(symbols_this_run)} symbols ({skipped} skipped)")
         for symbol in symbols_this_run:
             print(f"   [{symbol}] ...")
-            quotes = fetch_angel_option_quotes(client, symbol)
+            spot = None
+            sq = stock_quotes.get(symbol, {}) if stock_quotes else {}
+            if sq:
+                spot = sq.get("regularMarketPrice") or sq.get("currentPrice") or sq.get("previousClose")
+            quotes = fetch_angel_option_quotes(client, symbol, current_price=spot)
             if quotes:
                 angel_quotes[symbol] = quotes
                 print(f"     {len(quotes)} quotes")
