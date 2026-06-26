@@ -1,11 +1,11 @@
 from __future__ import annotations
 
+import logging
 import os
 
 from fastapi import FastAPI, Query
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 
 from backend.data.hybrid_market import fetch_option_chain, fetch_stock_history
 from backend.data.strike_scheme import bootstrap_strike_scheme_cache
@@ -19,6 +19,8 @@ from backend.services.analytics import (
     get_snapshot_bundle,
 )
 from backend.services.screener import build_screener_payload
+
+logger = logging.getLogger(__name__)
 
 app = FastAPI(
     title="FRAM Risk Analytics API",
@@ -50,11 +52,43 @@ app.add_middleware(
 @app.on_event("startup")
 def preload_strike_scheme_cache() -> None:
     bootstrap_strike_scheme_cache()
+    _check_angel_connectivity_on_startup()
+    _check_yfinance_on_startup()
+
+
+def _check_angel_connectivity_on_startup() -> None:
+    try:
+        from backend.data.angel_market import _check_angel_connectivity
+        if _check_angel_connectivity():
+            logger.info("angel_connectivity: ok")
+        else:
+            logger.warning("angel_connectivity: unreachable — Angel option quotes will fall back to NSE/yfinance")
+    except Exception as exc:
+        logger.warning("angel_connectivity: check failed (%s) — Angel option quotes will fall back to NSE/yfinance", exc)
+
+
+def _check_yfinance_on_startup() -> None:
+    try:
+        import yfinance as yf
+        ticker = yf.Ticker("RELIANCE.NS")
+        hist = ticker.history(period="5d", interval="1d")
+        if hist.empty:
+            logger.warning("yfinance_connectivity: empty response — stock history will fall back to synthetic data")
+        else:
+            logger.info("yfinance_connectivity: ok")
+    except Exception as exc:
+        logger.warning("yfinance_connectivity: check failed (%s) — stock history will fall back to synthetic data", exc)
 
 
 @app.get("/health")
 def healthcheck() -> dict[str, str]:
-    return {"status": "ok"}
+    angel_ok = False
+    try:
+        from backend.data.angel_market import _check_angel_connectivity
+        angel_ok = _check_angel_connectivity()
+    except Exception:
+        pass
+    return {"status": "ok", "angel_connectivity": "ok" if angel_ok else "unreachable"}
 
 
 @app.get("/api/market/stock", response_model=None)

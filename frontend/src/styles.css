@@ -655,6 +655,20 @@ select {
   margin-bottom: 10px;
 }
 
+.card-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.live-badge {
+  font-size: 9px;
+  font-weight: 400;
+  color: var(--txt4);
+  letter-spacing: 0;
+  text-transform: none;
+}
+
 .no-margin {
   margin: 0;
 }

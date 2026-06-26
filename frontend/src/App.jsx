@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { memo, useEffect, useMemo, useRef, useState } from "react";
 import {
   Area,
   AreaChart,
@@ -36,6 +36,7 @@ import {
   getOptionPriceByModel,
   getStockData,
   hedgePortfolio,
+  LIQUIDITY_REFS,
   OPTION_TYPE,
   PRICING_MODEL,
   STOCK_UNIVERSE,
@@ -128,6 +129,15 @@ function quantile(values, probability) {
   return clean[lower] * (upper - position) + clean[upper] * (position - lower);
 }
 
+function quantileSorted(sorted, probability) {
+  if (!sorted.length) return 0;
+  const position = (sorted.length - 1) * probability;
+  const lower = Math.floor(position);
+  const upper = Math.ceil(position);
+  if (lower === upper) return sorted[lower];
+  return sorted[lower] * (upper - position) + sorted[upper] * (position - lower);
+}
+
 function parseMarketCapToRupees(rawValue) {
   if (!rawValue || typeof rawValue !== "string") return null;
   const cleaned = rawValue.replace(/,/g, "").trim();
@@ -191,7 +201,7 @@ function downloadCsv(filename, content) {
   URL.revokeObjectURL(url);
 }
 
-function StockSummaryTab({ report }) {
+function StockSummaryTab({ report, lastLiveUpdate }) {
   const volatilitySignals = report.volatilitySignals || {
     rollingHv20d: 0,
     rollingGarchIv20d: report.garchVolatility || 0,
@@ -245,7 +255,10 @@ function StockSummaryTab({ report }) {
     <>
       <div className="row">
         <section className="card flex-card">
-          <div className="card-title">Price Overview</div>
+          <div className="card-title">
+            Price Overview
+            {lastLiveUpdate ? <span className="live-badge">Last updated {new Date(lastLiveUpdate).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit", second: "2-digit" })}</span> : null}
+          </div>
           <div className="price-headline">
             <span className="price-main">{formatCurrency(report.liveQuote.close)}</span>
             <span className={change >= 0 ? "up price-move" : "down price-move"}>
@@ -443,7 +456,8 @@ function StockSummaryTab({ report }) {
   );
 }
 
-function LiquidityComparisonTab({
+const LiquidityComparisonTab = memo(function LiquidityComparisonTab({
+  loading,
   liquidityStudy,
   screener,
   liquidTicker,
@@ -453,32 +467,36 @@ function LiquidityComparisonTab({
   onSelectLiquid,
   onSelectIlliquid,
 }) {
-  const liquidStudyItem = liquidityStudy?.liquid;
-  const illiquidStudyItem = liquidityStudy?.illiquid;
-  const liquidStudy = liquidStudyItem;
-  const illiquidStudy = illiquidStudyItem;
-  const pairedStudies = [liquidStudy, illiquidStudy].filter(Boolean);
-  const regimeComparisonData = ["Low Vol", "Normal Vol", "High Vol"].map((regime) => ({
-    regime,
-    liquid: liquidStudy?.regimeAverages?.find((item) => item.regime === regime)?.amihud ?? 0,
-    illiquid: illiquidStudy?.regimeAverages?.find((item) => item.regime === regime)?.amihud ?? 0,
-  }));
-  const rollingCorrelationData = Array.from({
-    length: Math.max(liquidStudy?.rollingCorrelation?.length || 0, illiquidStudy?.rollingCorrelation?.length || 0),
-  }, (_, index) => ({
-    date: liquidStudy?.rollingCorrelation?.[index]?.date || illiquidStudy?.rollingCorrelation?.[index]?.date || `${index + 1}`,
-    liquid: liquidStudy?.rollingCorrelation?.[index]?.corr ?? null,
-    illiquid: illiquidStudy?.rollingCorrelation?.[index]?.corr ?? null,
-  }));
-  const summaryRows = liquidStudy && illiquidStudy ? [
-    ["Pearson corr (vol vs illiquidity)", liquidStudy.summary.pearson, illiquidStudy.summary.pearson],
-    ["Spearman corr", liquidStudy.summary.spearman, illiquidStudy.summary.spearman],
-    ["Regression R²", liquidStudy.summary.r2, illiquidStudy.summary.r2],
-    ["Avg Amihud — Low Vol days", liquidStudy.summary.avgLow, illiquidStudy.summary.avgLow],
-    ["Avg Amihud — High Vol days", liquidStudy.summary.avgHigh, illiquidStudy.summary.avgHigh],
-    ["High Vol / Low Vol ratio", liquidStudy.summary.ratio, illiquidStudy.summary.ratio],
-    ["Avg turnover ratio", liquidStudy.summary.avgTurnoverRatio, illiquidStudy.summary.avgTurnoverRatio],
-  ] : [];
+  const liquidStudy = liquidityStudy?.liquid;
+  const illiquidStudy = liquidityStudy?.illiquid;
+  const pairedStudies = useMemo(() => [liquidStudy, illiquidStudy].filter(Boolean), [liquidStudy, illiquidStudy]);
+  const regimeComparisonData = useMemo(() =>
+    ["Low Vol", "Normal Vol", "High Vol"].map((regime) => ({
+      regime,
+      liquid: liquidStudy?.regimeAverages?.find((item) => item.regime === regime)?.amihud ?? 0,
+      illiquid: illiquidStudy?.regimeAverages?.find((item) => item.regime === regime)?.amihud ?? 0,
+    })),
+  [liquidStudy, illiquidStudy]);
+  const rollingCorrelationData = useMemo(() =>
+    Array.from({
+      length: Math.max(liquidStudy?.rollingCorrelation?.length || 0, illiquidStudy?.rollingCorrelation?.length || 0),
+    }, (_, index) => ({
+      date: liquidStudy?.rollingCorrelation?.[index]?.date || illiquidStudy?.rollingCorrelation?.[index]?.date || `${index + 1}`,
+      liquid: liquidStudy?.rollingCorrelation?.[index]?.corr ?? null,
+      illiquid: illiquidStudy?.rollingCorrelation?.[index]?.corr ?? null,
+    })),
+  [liquidStudy, illiquidStudy]);
+  const summaryRows = useMemo(() =>
+    liquidStudy && illiquidStudy ? [
+      ["Pearson corr (vol vs illiquidity)", liquidStudy.summary.pearson, illiquidStudy.summary.pearson],
+      ["Spearman corr", liquidStudy.summary.spearman, illiquidStudy.summary.spearman],
+      ["Regression R²", liquidStudy.summary.r2, illiquidStudy.summary.r2],
+      ["Avg Amihud — Low Vol days", liquidStudy.summary.avgLow, illiquidStudy.summary.avgLow],
+      ["Avg Amihud — High Vol days", liquidStudy.summary.avgHigh, illiquidStudy.summary.avgHigh],
+      ["High Vol / Low Vol ratio", liquidStudy.summary.ratio, illiquidStudy.summary.ratio],
+      ["Avg turnover ratio", liquidStudy.summary.avgTurnoverRatio, illiquidStudy.summary.avgTurnoverRatio],
+    ] : [],
+  [liquidStudy, illiquidStudy]);
   const rollingCorrelationDomain = useMemo(
     () => buildZoomDomain(rollingCorrelationData.flatMap((row) => [row.liquid, row.illiquid]), { padRatio: 0.15, minPad: 0.05, clampMin: -1, clampMax: 1 }),
     [rollingCorrelationData],
@@ -560,7 +578,14 @@ function LiquidityComparisonTab({
         </div>
       </section>
 
-      {!liquidTicker || !illiquidTicker ? (
+      {loading ? (
+        <section className="card liquidity-empty-state">
+          <div className="liquidity-empty-title">Loading liquidity comparison...</div>
+          <div className="liquidity-empty-copy">Fetching data for both stocks and computing analytics.</div>
+        </section>
+      ) : null}
+
+      {!loading && (!liquidTicker || !illiquidTicker) ? (
         <section className="card liquidity-empty-state">
           <div className="liquidity-empty-title">Pick two stocks to begin</div>
           <div className="liquidity-empty-copy">Charts and summary statistics will appear here once both sides are selected.</div>
@@ -718,7 +743,7 @@ function LiquidityComparisonTab({
       ) : null}
     </>
   );
-}
+});
 
 function OptionChainTab({ report, selectionByOptionId, onIncreaseOption, onDecreaseOption, pricingModel, onPricingModelChange }) {
   const maturities = useMemo(() => Object.keys(report.optionChain).map(Number).sort((a, b) => a - b), [report.optionChain]);
@@ -1627,29 +1652,51 @@ function averageTail(values, threshold) {
 
 function calculateStudyVaR(study, regime = null) {
   const points = (study?.points || []).filter((point) => !regime || point.regime === regime);
-  const losses = points
-    .map((point) => Number(point.absReturn || point.realizedVol || 0))
-    .filter((value) => Number.isFinite(value) && value >= 0);
-  const price = Number(study?.points?.at(-1)?.price || 0);
-  const avgAmihud = mean(points.map((point) => point.amihud));
-  const avgTurnoverRatio = mean(points.map((point) => point.turnoverRatio));
-  const var95 = quantile(losses, 0.95);
-  const var99 = quantile(losses, 0.99);
+  if (!points.length) {
+    return {
+      ticker: study?.ticker || "-",
+      regime: regime || "All",
+      count: 0, price: 0,
+      var95: 0, var99: 0, cvar95: 0, cvar99: 0,
+      var95Value: 0, var99Value: 0, cvar95Value: 0, cvar99Value: 0,
+      liquidityAdjusted95: 0, liquidityAdjusted99: 0,
+      liquidityAdjusted95Value: 0, liquidityAdjusted99Value: 0,
+      liquidityPenaltyFactor: 1, avgAmihud: 0, avgTurnoverRatio: 0,
+    };
+  }
+  const count = points.length;
+  const losses = new Array(count);
+  let sumAmihud = 0;
+  let sumTurnover = 0;
+  for (let i = 0; i < count; i++) {
+    const p = points[i];
+    sumAmihud += p.amihud;
+    sumTurnover += p.turnoverRatio;
+    losses[i] = Number(p.absReturn ?? p.realizedVol ?? 0);
+  }
+  const avgAmihud = sumAmihud / count;
+  const avgTurnoverRatio = sumTurnover / count;
+
+  losses.sort((a, b) => a - b);
+  const var95 = quantileSorted(losses, 0.95);
+  const var99 = quantileSorted(losses, 0.99);
   const cvar95 = averageTail(losses, var95);
   const cvar99 = averageTail(losses, var99);
-  const amihudPenalty = clamp(avgAmihud * 20, 0, 0.25);
-  const turnoverPenalty = clamp((0.01 - avgTurnoverRatio) * 12, 0, 0.25);
+
+  const price = Number(study.points.at(-1)?.price || 0);
+  const amihudNormalized = avgAmihud / (LIQUIDITY_REFS.amihudRef || 0.001);
+  const amihudPenalty = clamp(0.5 * Math.sqrt(amihudNormalized) - 0.5, 0, 0.30);
+  const turnoverRefScaled = (LIQUIDITY_REFS.turnoverRef || 40) / 10000;
+  const turnoverShortfall = Math.max(0, 1 - avgTurnoverRatio / turnoverRefScaled);
+  const turnoverPenalty = clamp(0.4 * turnoverShortfall, 0, 0.20);
   const liquidityPenaltyFactor = 1 + amihudPenalty + turnoverPenalty;
 
   return {
     ticker: study?.ticker || "-",
     regime: regime || "All",
-    count: losses.length,
+    count,
     price,
-    var95,
-    var99,
-    cvar95,
-    cvar99,
+    var95, var99, cvar95, cvar99,
     var95Value: var95 * price,
     var99Value: var99 * price,
     cvar95Value: cvar95 * price,
@@ -1658,9 +1705,7 @@ function calculateStudyVaR(study, regime = null) {
     liquidityAdjusted99: var99 * liquidityPenaltyFactor,
     liquidityAdjusted95Value: var95 * liquidityPenaltyFactor * price,
     liquidityAdjusted99Value: var99 * liquidityPenaltyFactor * price,
-    liquidityPenaltyFactor,
-    avgAmihud,
-    avgTurnoverRatio,
+    liquidityPenaltyFactor, avgAmihud, avgTurnoverRatio,
   };
 }
 
@@ -1697,12 +1742,14 @@ function RiskTab({ unhedgedVarResult, hedgedVarResult, liquidityComparison }) {
     { label: "CVaR 99 Historical", unhedged: unhedgedVarResult.cvarHistorical99, hedged: hedgedVarResult.cvarHistorical99 },
   ];
   const varBars = bars.filter((bar) => bar.label.startsWith("VaR"));
-  const liquidRisk = calculateStudyVaR(liquidityComparison?.liquid);
-  const illiquidRisk = calculateStudyVaR(liquidityComparison?.illiquid);
-  const regimeRows = ["Normal Vol", "High Vol"].flatMap((regime) => [
-    { regime, bucket: "Liquid", risk: calculateStudyVaR(liquidityComparison?.liquid, regime) },
-    { regime, bucket: "Illiquid", risk: calculateStudyVaR(liquidityComparison?.illiquid, regime) },
-  ]);
+  const liquidRisk = useMemo(() => calculateStudyVaR(liquidityComparison?.liquid), [liquidityComparison?.liquid]);
+  const illiquidRisk = useMemo(() => calculateStudyVaR(liquidityComparison?.illiquid), [liquidityComparison?.illiquid]);
+  const regimeRows = useMemo(() =>
+    ["Normal Vol", "High Vol"].flatMap((regime) => [
+      { regime, bucket: "Liquid", risk: calculateStudyVaR(liquidityComparison?.liquid, regime) },
+      { regime, bucket: "Illiquid", risk: calculateStudyVaR(liquidityComparison?.illiquid, regime) },
+    ]),
+  [liquidityComparison?.liquid, liquidityComparison?.illiquid]);
   const modelValues = bars.map((bar) => Math.abs(bar.unhedged)).filter((value) => Number.isFinite(value) && value > 0);
   const minModelVaR = modelValues.length ? Math.min(...modelValues) : 0;
   const maxModelVaR = modelValues.length ? Math.max(...modelValues) : 0;
@@ -2120,6 +2167,8 @@ export default function App() {
   const [activeTab, setActiveTab] = useState("summary");
   const [report, setReport] = useState(null);
   const [liquidityComparison, setLiquidityComparison] = useState(null);
+  const [liquidityLoading, setLiquidityLoading] = useState(false);
+  const [lastLiveUpdate, setLastLiveUpdate] = useState(null);
   const [screener, setScreener] = useState(null);
   const [loading, setLoading] = useState(true);
   const [derivativesLoading, setDerivativesLoading] = useState(false);
@@ -2173,11 +2222,14 @@ export default function App() {
     }
   }
 
+  const reportRef = useRef(report);
+  reportRef.current = report;
+
   async function refreshLiveQuote() {
-    if (!ticker || !report || !report.stock) return;
+    if (!ticker) return;
     try {
       const fresh = await getStockData(ticker, startDate, endDate);
-      if (!fresh?.liveQuote) return;
+      if (!fresh?.liveQuote || !reportRef.current) return;
       setReport((prev) => {
         if (!prev) return prev;
         return {
@@ -2186,6 +2238,7 @@ export default function App() {
           liveQuote: fresh.liveQuote,
         };
       });
+      setLastLiveUpdate(Date.now());
     } catch (err) {
       // ignore — keep showing last known price
     }
@@ -2241,9 +2294,11 @@ export default function App() {
     async function loadLiquidityComparison() {
       if (!liquidTicker || !illiquidTicker || liquidTicker === illiquidTicker) {
         setLiquidityComparison(null);
+        setLiquidityLoading(false);
         return;
       }
 
+      setLiquidityLoading(true);
       try {
         const nextComparison = await buildLiquidityComparisonReport({
           liquidTicker,
@@ -2251,10 +2306,16 @@ export default function App() {
           startDate,
           endDate,
         });
-        if (!ignore) setLiquidityComparison(nextComparison);
+        if (!ignore) {
+          setLiquidityComparison(nextComparison);
+          setLiquidityLoading(false);
+        }
       } catch (loadError) {
         console.warn("Unable to load liquidity comparison", loadError);
-        if (!ignore) setLiquidityComparison(null);
+        if (!ignore) {
+          setLiquidityComparison(null);
+          setLiquidityLoading(false);
+        }
       }
     }
 
@@ -2410,9 +2471,10 @@ export default function App() {
                 onSelectIlliquid={setIlliquidTicker}
               />
             ) : null}
-            {activeTab === "summary" ? <StockSummaryTab report={report} /> : null}
+            {activeTab === "summary" ? <StockSummaryTab report={report} lastLiveUpdate={lastLiveUpdate} /> : null}
             {activeTab === "liquidity" ? (
               <LiquidityComparisonTab
+                loading={liquidityLoading}
                 liquidityStudy={liquidityComparison}
                 screener={screener}
                 liquidTicker={liquidTicker}

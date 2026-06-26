@@ -132,10 +132,22 @@ def _load_master() -> list[AngelInstrument]:
     return [_normalize_record(row) for row in payload]
 
 
+def _check_angel_connectivity(timeout: float = 3.0) -> bool:
+    import socket
+    try:
+        sock = socket.create_connection(("apiconnect.angelone.in", 443), timeout=timeout)
+        sock.close()
+        return True
+    except Exception:
+        return False
+
+
 def _login_client() -> Any:
     _load_local_env()
     if SmartConnect is None or pyotp is None:
         raise RuntimeError("angel_dependencies_missing")
+    if not _check_angel_connectivity():
+        raise RuntimeError("angel_host_unreachable")
     credentials = {
         "api_key": os.getenv("ANGEL_API_KEY", "").strip(),
         "client_id": os.getenv("ANGEL_CLIENT_ID", "").strip(),

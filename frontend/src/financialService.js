@@ -235,6 +235,26 @@ function mean(values) {
   return values.reduce((sum, value) => sum + value, 0) / values.length;
 }
 
+function computeSkewness(values) {
+  const n = values.length;
+  if (n < 3) return 0;
+  const m = mean(values);
+  const std = Math.sqrt(values.reduce((s, v) => s + (v - m) ** 2, 0) / (n - 1));
+  if (!std) return 0;
+  const m3 = values.reduce((s, v) => s + (v - m) ** 3, 0) / n;
+  return m3 / std ** 3;
+}
+
+function computeKurtosis(values) {
+  const n = values.length;
+  if (n < 4) return 0;
+  const m = mean(values);
+  const std = Math.sqrt(values.reduce((s, v) => s + (v - m) ** 2, 0) / (n - 1));
+  if (!std) return 0;
+  const m4 = values.reduce((s, v) => s + (v - m) ** 4, 0) / n;
+  return m4 / std ** 4 - 3; // excess kurtosis
+}
+
 function pearsonCorrelation(xs, ys) {
   if (xs.length !== ys.length || xs.length < 2) return 0;
   const mx = mean(xs);
@@ -320,12 +340,54 @@ function buildTargetStrikes(currentPrice, strikeStep, otmCount = 5) {
     .filter((strike) => strike > 0);
 }
 
+function computeGarchTaVolatility(dailyReturns, fallbackVol = 0.22) {
+  const n = dailyReturns.length;
+  if (n < 30) {
+    const mu = mean(dailyReturns);
+    const hv = Math.sqrt(dailyReturns.reduce((s, r) => s + (r - mu) ** 2, 0) / Math.max(1, n - 1)) * Math.sqrt(252);
+    const skew = computeSkewness(dailyReturns);
+    const kurt = computeKurtosis(dailyReturns);
+    const z = 1.645;
+    const cf = 1 + (skew / 6) * z + (kurt / 24) * (z ** 2 - 1) - (skew ** 2 / 36) * (2 * z ** 2 - 5);
+    return clamp(hv * clamp(cf, 0.8, 1.5), 0.08, 1.25);
+  }
+
+  const omega = 0.000002;
+  const alpha = 0.09;
+  const beta = 0.90;
+
+  const mu = mean(dailyReturns);
+  const varSeries = new Array(n).fill(0);
+  const initWindow = Math.min(20, n);
+  varSeries[0] = dailyReturns.slice(0, initWindow).reduce((s, r) => s + (r - mu) ** 2, 0) / initWindow;
+
+  for (let t = 1; t < n; t++) {
+    const eps2 = (dailyReturns[t - 1] - mu) ** 2;
+    varSeries[t] = omega + alpha * eps2 + beta * varSeries[t - 1];
+  }
+
+  const garchDailyVol = Math.sqrt(varSeries[n - 1]);
+  const garchAnnVol = garchDailyVol * Math.sqrt(252);
+
+  const skew = computeSkewness(dailyReturns);
+  const kurt = computeKurtosis(dailyReturns);
+  const z = 1.645;
+  const cfAdjustment = 1 + (skew / 6) * z + (kurt / 24) * (z ** 2 - 1) - (skew ** 2 / 36) * (2 * z ** 2 - 5);
+
+  return clamp(garchAnnVol * clamp(cfAdjustment, 0.8, 1.5), 0.08, 1.25);
+}
+
 function computeTransformAugmentedVolatility(summaryStats, fallbackVol = 0.22) {
-  const baseVol = summaryStats.annualizedVolatility || fallbackVol;
-  const skew = Number.isFinite(summaryStats.skewness) ? summaryStats.skewness : 0;
-  const kurtosis = Number.isFinite(summaryStats.kurtosis) ? summaryStats.kurtosis : 0;
-  const transformFactor = Math.exp(0.08 * skew + 0.04 * kurtosis);
-  return clamp(baseVol * transformFactor, 0.08, 1.25);
+  const dailyReturns = summaryStats?.dailyLogReturns;
+  if (dailyReturns && dailyReturns.length >= 30) {
+    return computeGarchTaVolatility(dailyReturns, fallbackVol);
+  }
+  const baseVol = summaryStats?.annualizedVolatility || fallbackVol;
+  const skew = Number.isFinite(summaryStats?.skewness) ? summaryStats.skewness : 0;
+  const kurtosis = Number.isFinite(summaryStats?.kurtosis) ? summaryStats.kurtosis : 0;
+  const z = 1.645;
+  const cf = 1 + (skew / 6) * z + (kurtosis / 24) * (z ** 2 - 1) - (skew ** 2 / 36) * (2 * z ** 2 - 5);
+  return clamp(baseVol * clamp(cf, 0.8, 1.5), 0.08, 1.25);
 }
 
 function computeStrikeAdjustedGarchTaIv(currentPrice, strike, baseGarchVolatility) {
@@ -916,25 +978,26 @@ function generateHedgingRecommendations(portfolioGreeks) {
     });
   }
 
-  const gammaThreshold = 0.5;
-  if (scaled.gamma >= -gammaThreshold && scaled.gamma < gammaThreshold) {
+  const onePctMove = 0.01 * spot;
+  const gammaPnL_1pct = 0.5 * Math.abs(scaled.gamma) * onePctMove ** 2;
+  const GAMMA_THRESHOLD = 50;
+  if (gammaPnL_1pct < GAMMA_THRESHOLD) {
     recommendations.push({
       greek: "gamma",
       severity: "info",
       status: scaled.gamma >= 0 ? "Long Gamma" : "Short Gamma",
-      headline: `Gamma ${scaled.gamma >= 0 ? "+" : ""}${scaled.gamma.toFixed(3)}`,
+      headline: `Gamma P&L ₹${gammaPnL_1pct.toFixed(2)}/1%`,
       action: null,
       why: scaled.gamma >= 0
-        ? "Positive gamma already adds convexity."
+        ? "Positive gamma adds convexity."
         : "Gamma exposure is below the materiality threshold.",
     });
-  } else if (scaled.gamma < -gammaThreshold) {
-    const gammaMag = Math.abs(scaled.gamma);
+  } else if (scaled.gamma < 0) {
     recommendations.push({
       greek: "gamma",
-      severity: gammaMag > 5 ? "high" : gammaMag > 2 ? "medium" : "low",
+      severity: gammaPnL_1pct > 500 ? "high" : gammaPnL_1pct > 200 ? "medium" : "low",
       status: "Short Gamma",
-      headline: `Gamma ${scaled.gamma.toFixed(3)}`,
+      headline: `Gamma P&L ₹${gammaPnL_1pct.toFixed(2)}/1%`,
       action: gammaHedge ? `Buy ${gammaHedgeQty} ${gammaHedge.label}.` : "Buy 1 liquid ATM option.",
       why: "Near-ATM long options restore convexity most efficiently.",
       suggestedLeg: gammaHedge
@@ -946,12 +1009,12 @@ function generateHedgingRecommendations(portfolioGreeks) {
           }
         : null,
     });
-  } else if (scaled.gamma >= gammaThreshold) {
+  } else if (scaled.gamma >= 0) {
     recommendations.push({
       greek: "gamma",
-      severity: "low",
+      severity: gammaPnL_1pct > 500 ? "medium" : "low",
       status: "High Gamma",
-      headline: `Gamma +${scaled.gamma.toFixed(3)}`,
+      headline: `Gamma P&L ₹${gammaPnL_1pct.toFixed(2)}/1%`,
       action: "Check delta more often.",
       why: "High gamma makes delta drift quickly after spot moves.",
     });
@@ -1110,13 +1173,24 @@ function calculatePortfolioVaR(portfolio, stockPrices, config) {
     )
     : 0;
   const garchDailyVol = Math.max(
-    (
-      config.pricingModel === PRICING_MODEL.HIST_VOL
-        ? portfolio.reduce((sum, position) => sum + (Math.abs(position.quantity) * (position.option?.histVolatility || position.option?.iv || 0)), 0)
-          / Math.max(1, portfolio.filter((position) => position.option).length)
-        : portfolio.reduce((sum, position) => sum + (Math.abs(position.quantity) * (position.option?.iv || 0)), 0)
-          / Math.max(1, portfolio.filter((position) => position.option).length)
-    ) / Math.sqrt(252),
+    (() => {
+      const optPositions = portfolio.filter((p) => p.option);
+      if (!optPositions.length) return 0;
+      const getIV = config.pricingModel === PRICING_MODEL.HIST_VOL
+        ? (pos) => pos.option?.histVolatility || pos.option?.iv || 0
+        : (pos) => pos.option?.iv || 0;
+      let totalVegaWeight = 0;
+      let weightedIVSum = 0;
+      for (const pos of optPositions) {
+        const greeks = getOptionGreeksByModel(pos.option, config.pricingModel);
+        const vegaWeight = Math.abs(greeks.vega * pos.quantity * config.lotSize);
+        if (vegaWeight > 0) {
+          weightedIVSum += getIV(pos) * vegaWeight;
+          totalVegaWeight += vegaWeight;
+        }
+      }
+      return totalVegaWeight > 0 ? weightedIVSum / totalVegaWeight : 0;
+    })() / Math.sqrt(252),
     dailyReturnStd,
     0,
   );
@@ -1618,6 +1692,7 @@ export async function buildLiquidityComparisonReport({ liquidTicker, illiquidTic
 
 export const STOCK_UNIVERSE = Object.keys(DEFAULT_MARKET_PROFILES);
 export {
+  LIQUIDITY_REFS,
   OPTION_TYPE,
   PRICING_MODEL,
   STRATEGY_TYPE,
@@ -1629,6 +1704,7 @@ export {
   calculatePortfolioValue,
   calculatePortfolioVaR,
   calculatePnLScenarios,
+  computeGarchTaVolatility,
   computeTransformAugmentedVolatility,
   detectStrategyName,
   generateHedgingRecommendations,
