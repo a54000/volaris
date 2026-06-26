@@ -52,6 +52,8 @@ TRACKED_SYMBOLS = [
     "ICICIBANK.NS", "KOTAKBANK.NS", "AXISBANK.NS", "ITC.NS", "SBIN.NS",
     "BHARTIARTL.NS", "LT.NS", "TATAMOTORS.NS", "MARUTI.NS", "HCLTECH.NS",
 ]
+BATCH_SIZE = 3  # Angel symbols per cron run (avoids rate limits)
+BATCH_STATE_FILE = "/tmp/fram-fetcher-batch.txt"
 
 VM_URL = os.getenv("VM_URL", "https://volaris.hrgp.in")
 FETCHER_TOKEN = os.getenv("FETCHER_TOKEN", "")
@@ -273,6 +275,26 @@ def push_to_vm(payload: dict) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# Rotating batch — avoids Angel rate limits
+# ---------------------------------------------------------------------------
+def _get_batch_index() -> int:
+    try:
+        raw = Path(BATCH_STATE_FILE).read_text().strip()
+        idx = int(raw)
+    except (FileNotFoundError, ValueError):
+        idx = 0
+    num_batches = max(1, (len(TRACKED_SYMBOLS) + BATCH_SIZE - 1) // BATCH_SIZE)
+    Path(BATCH_STATE_FILE).write_text(str((idx + 1) % num_batches))
+    return idx
+
+
+def _batch_symbols(symbols: list[str], size: int, idx: int) -> list[str]:
+    start = idx * size
+    end = start + size
+    return symbols[start:end]
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 def main() -> None:
@@ -295,9 +317,15 @@ def main() -> None:
         print(f"   SKIP: {exc}")
         client = None
 
+    # Rotating batch — avoid Angel rate limits by fetching subset each run
+    batch_index = _get_batch_index()
+    symbols_this_run = _batch_symbols(TRACKED_SYMBOLS, BATCH_SIZE, batch_index)
+    skipped = len(TRACKED_SYMBOLS) - len(symbols_this_run)
+
     angel_quotes: dict[str, list[dict]] = {}
     if client:
-        for symbol in TRACKED_SYMBOLS:
+        print(f"   Batch {batch_index}: {len(symbols_this_run)} symbols ({skipped} skipped)")
+        for symbol in symbols_this_run:
             print(f"   [{symbol}] ...")
             quotes = fetch_angel_option_quotes(client, symbol)
             if quotes:
@@ -306,11 +334,11 @@ def main() -> None:
             else:
                 print(f"     0 quotes (skipped)")
 
-    # 3. NSE option chains (has correct current strikes)
+    # 3. NSE option chains (same batch)
     print()
     print("3. NSE option chains ...")
     nse_chains: dict[str, dict] = {}
-    for symbol in TRACKED_SYMBOLS:
+    for symbol in symbols_this_run:
         print(f"   [{symbol}] ...")
         chain = fetch_nse_option_chain(symbol)
         if chain:
