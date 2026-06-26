@@ -198,12 +198,22 @@ def fetch_live_option_quotes_angel(symbol: str, definitions: list[dict]) -> Ange
     from backend.data.fetcher_cache import get_angel_quotes
     cached = get_angel_quotes(symbol)
     if cached is not None:
-        quotes: dict[tuple[str, int, float], AngelQuote] = {}
-        for entry in cached:
-            key = (entry["option_type"], entry["maturity_days"], entry["strike"])
-            quotes[key] = AngelQuote(**{k: v for k, v in entry.items() if k != "key"})
-        if quotes:
-            return AngelFetchResult(quotes=quotes, status="live", detail="fetcher_cache")
+        results: dict[tuple[str, int, float], AngelQuote] = {}
+        for definition in definitions:
+            req_type = str(definition["option_type"])
+            req_maturity = int(definition["maturity_days"])
+            req_strike = float(definition["strike"])
+            candidates = [
+                e for e in cached
+                if e["option_type"] == req_type and abs(e["strike"] - req_strike) < 0.01
+            ]
+            if not candidates:
+                continue
+            best = min(candidates, key=lambda e: abs(e["maturity_days"] - req_maturity))
+            key = (req_type, req_maturity, req_strike)
+            results[key] = AngelQuote(**{k: v for k, v in best.items() if k != "key"})
+        if results:
+            return AngelFetchResult(quotes=results, status="live", detail="fetcher_cache")
         return AngelFetchResult(quotes={}, status="fallback", detail="fetcher_cache_empty")
 
     try:
