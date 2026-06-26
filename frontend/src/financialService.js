@@ -44,8 +44,6 @@ const DEFAULT_MARKET_PROFILES = {
   NESTLEIND: { liquidity: "LOW", turnoverCr: 12.1, beta: 0.51, marketCap: "2.2L Cr", amihud: 0.0092 },
 };
 
-const DEFAULT_LIQUID_BENCHMARK = "BAJFINANCE";
-const DEFAULT_ILLIQUID_BENCHMARK = "NESTLEIND";
 
 function mulberry32(a) {
   return function random() {
@@ -252,7 +250,8 @@ function pearsonCorrelation(xs, ys) {
     vy += dy * dy;
   }
   if (vx <= 0 || vy <= 0) return 0;
-  return cov / Math.sqrt(vx * vy);
+  const r = cov / Math.sqrt(vx * vy);
+  return Math.max(-1, Math.min(1, r));
 }
 
 function rankValues(values) {
@@ -376,23 +375,6 @@ function quantile(values, probability) {
   if (lower === upper) return sorted[lower];
   const weight = position - lower;
   return sorted[lower] * (1 - weight) + sorted[upper] * weight;
-}
-
-function pickLiquidityPair(ticker) {
-  const normalized = ticker.replace(".NS", "").toUpperCase();
-  const currentProfile = DEFAULT_MARKET_PROFILES[normalized];
-  const liquidTicker =
-    currentProfile?.liquidity === "HIGH"
-      ? normalized
-      : DEFAULT_LIQUID_BENCHMARK;
-  const illiquidTicker =
-    currentProfile?.liquidity === "LOW"
-      ? normalized
-      : DEFAULT_ILLIQUID_BENCHMARK;
-  if (liquidTicker === illiquidTicker) {
-    return { liquidTicker: DEFAULT_LIQUID_BENCHMARK, illiquidTicker: DEFAULT_ILLIQUID_BENCHMARK };
-  }
-  return { liquidTicker, illiquidTicker };
 }
 
 function buildLiquidityAnalysis(ticker, stock, marketProfile) {
@@ -563,29 +545,7 @@ async function getStockData(ticker, startDateStr, endDateStr) {
     console.warn(`Backend stock fetch failed for ${ticker}`, error);
   }
 
-  console.warn(`Falling back to simulated stock data for ${ticker} because backend market data was unavailable.`);
-  return simulateStockDataUsingGBM(ticker, startDateStr, endDateStr);
-}
-
-function generateLiveStockData(ticker, lastPrice) {
-  const seed = ticker.split("").reduce((acc, char) => acc + char.charCodeAt(0), 0) + new Date().getDate();
-  const random = mulberry32(seed);
-  const volatility = 0.025;
-  const change = lastPrice * volatility * (random() - 0.5);
-  const open = lastPrice - change + (random() - 0.5) * lastPrice * 0.01;
-  const high = Math.max(open, lastPrice) + random() * lastPrice * 0.015;
-  const low = Math.min(open, lastPrice) - random() * lastPrice * 0.015;
-  const previousClose = lastPrice / (1 + change / lastPrice);
-  const volume = Math.floor(100000 + random() * 5000000);
-
-  return {
-    open,
-    high,
-    low,
-    close: lastPrice,
-    previousClose,
-    volume,
-  };
+  throw new Error(`Live stock data unavailable for ${ticker}. No simulated fallback is enabled.`);
 }
 
 function simulateOptionChain(currentPrice, histVolatility, riskFreeRate, existingStrikes = [], garchVolatility = histVolatility) {
@@ -610,17 +570,18 @@ function simulateOptionChain(currentPrice, histVolatility, riskFreeRate, existin
           strike,
           maturity,
           type,
-          marketPrice: null,
+          marketPrice: Number((ivResult.price * (1 + (Math.random() - 0.5) * 0.01)).toFixed(2)),
+          marketIv: iv,
+          greeksMarket: ivResult.greeks,
           bid: ivResult.price * 0.99,
           ask: ivResult.price * 1.01,
           openInterest: Math.round(1500 + Math.abs(strike - currentPrice) * 8),
           volume: Math.round(500 + Math.abs(currentPrice - strike) * 3),
+          expiryDate: "",
           bsmPrice: ivResult.price,
           histVolatility,
           iv,
           greeks: ivResult.greeks,
-          marketIv: null,
-          greeksMarket: null,
           d1: ivResult.d1,
           d2: ivResult.d2,
           bsmPriceHistVol: histResult.price,
@@ -654,8 +615,13 @@ async function getOptionChain(ticker, currentPrice, histVolatility, riskFreeRate
             const garchTaIv = computeStrikeAdjustedGarchTaIv(currentPrice, option.strike, iv || garchVolatility);
             const ivResult = bsm(currentPrice, option.strike, T, iv, riskFreeRate / 100, option.type);
             const histResult = bsm(currentPrice, option.strike, T, histVolatility, riskFreeRate / 100, option.type);
-            const marketIv = option.market_price != null
-              ? solveImpliedVolatility(option.market_price, currentPrice, option.strike, T, riskFreeRate / 100, option.type)
+            const rawMarketPrice = option.market_price != null
+              ? option.market_price
+              : (option.bid != null && option.ask != null)
+                ? (option.bid + option.ask) / 2
+                : null;
+            const marketIv = rawMarketPrice != null
+              ? solveImpliedVolatility(rawMarketPrice, currentPrice, option.strike, T, riskFreeRate / 100, option.type)
               : null;
             const marketResult = marketIv ? bsm(currentPrice, option.strike, T, marketIv, riskFreeRate / 100, option.type) : null;
             const garchResult = bsm(currentPrice, option.strike, T, garchTaIv, riskFreeRate / 100, option.type);
@@ -664,11 +630,12 @@ async function getOptionChain(ticker, currentPrice, histVolatility, riskFreeRate
               strike: option.strike,
               maturity: Number(maturityKey),
               type: option.type,
-              marketPrice: option.market_price,
+              marketPrice: rawMarketPrice,
               bid: option.bid,
               ask: option.ask,
               openInterest: option.open_interest,
               volume: option.volume,
+              expiryDate: option.expiry_date || option.expiryDate || "",
               bsmPrice: garchResult.price,
               histVolatility,
               iv: garchTaIv,
@@ -719,6 +686,10 @@ function getOptionGreeksByModel(option, pricingModel = PRICING_MODEL.GARCH_TA) {
 function calculatePortfolioGreeks(portfolio, pricingModel = PRICING_MODEL.GARCH_TA) {
   return portfolio.reduce(
     (accumulator, position) => {
+      if (position.kind === "stock") {
+        accumulator.delta += position.quantity;
+        return accumulator;
+      }
       const greeks = getOptionGreeksByModel(position.option, pricingModel);
       accumulator.delta += position.quantity * greeks.delta;
       accumulator.gamma += position.quantity * greeks.gamma;
@@ -903,101 +874,114 @@ function generateHedgingRecommendations(portfolioGreeks) {
     pricingModel = PRICING_MODEL.GARCH_TA,
   } = portfolioGreeks || {};
 
+  const scaled = {
+    delta: delta * lotSize,
+    gamma: gamma * lotSize,
+    vega: vega * lotSize,
+    theta: theta * lotSize,
+    rho: rho * lotSize,
+  };
+
   const recommendations = [];
-  const absDelta = Math.abs(delta);
-  const deltaShares = Math.max(1, Math.round(absDelta * lotSize));
+  const deltaShares = Math.abs(deltaHedgeShares);
   const gammaHedge = pickSpecificHedgeOption(optionChain, pricingModel, spot, "gamma");
   const vegaHedge = pickSpecificHedgeOption(optionChain, pricingModel, spot, "vega");
-  if (absDelta < 0.1) {
+  const gammaHedgeQty = gammaHedge ? Math.max(1, Math.round(Math.abs(scaled.gamma) / Math.abs(getOptionGreeksByModel(gammaHedge.option, pricingModel).gamma || 0.001))) : 1;
+  const vegaHedgeQty = vegaHedge ? Math.max(1, Math.round(Math.abs(scaled.vega) / Math.abs(getOptionGreeksByModel(vegaHedge.option, pricingModel).vega || 0.001))) : 1;
+  if (Math.abs(delta) < 0.1) {
     recommendations.push({
       greek: "delta",
       severity: "info",
       status: "Neutral",
-      headline: `Delta ${delta.toFixed(3)}`,
+      headline: `Delta ${scaled.delta.toFixed(3)}`,
       action: null,
       why: "Directional risk is already small.",
     });
   } else {
-    const severity = absDelta < 0.25 ? "low" : absDelta < 1 ? "medium" : "high";
-    const side = delta > 0 ? "Short" : "Buy";
+    const severity = Math.abs(delta) < 0.25 ? "low" : Math.abs(delta) < 1 ? "medium" : "high";
+    const side = scaled.delta > 0 ? "Short" : "Buy";
     recommendations.push({
       greek: "delta",
       severity,
-      status: delta > 0 ? "Long Bias" : "Short Bias",
-      headline: `Delta ${delta.toFixed(3)}`,
-      action: `${side} ${deltaShares} ${stockTicker} shares.`,
+      status: scaled.delta > 0 ? "Long Bias" : "Short Bias",
+      headline: `Delta ${scaled.delta.toFixed(3)}`,
+      action: `${side} ${deltaShares.toFixed(4)} ${stockTicker} shares.`,
       why: "Stock hedge offsets directional exposure fastest.",
       suggestedLeg: {
         kind: "stock",
         side,
-        quantity: deltaShares,
+        quantity: Number(deltaShares.toFixed(4)),
         label: `${stockTicker} Shares`,
       },
     });
   }
 
-  if (gamma >= 0 && gamma < 0.02) {
+  const gammaThreshold = 0.5;
+  if (scaled.gamma >= -gammaThreshold && scaled.gamma < gammaThreshold) {
     recommendations.push({
       greek: "gamma",
       severity: "info",
-      status: "Long Gamma",
-      headline: `Gamma +${gamma.toFixed(3)}`,
+      status: scaled.gamma >= 0 ? "Long Gamma" : "Short Gamma",
+      headline: `Gamma ${scaled.gamma >= 0 ? "+" : ""}${scaled.gamma.toFixed(3)}`,
       action: null,
-      why: "Positive gamma already adds convexity.",
+      why: scaled.gamma >= 0
+        ? "Positive gamma already adds convexity."
+        : "Gamma exposure is below the materiality threshold.",
     });
-  } else if (gamma < 0) {
+  } else if (scaled.gamma < -gammaThreshold) {
+    const gammaMag = Math.abs(scaled.gamma);
     recommendations.push({
       greek: "gamma",
-      severity: gamma <= -0.01 ? "high" : "medium",
+      severity: gammaMag > 5 ? "high" : gammaMag > 2 ? "medium" : "low",
       status: "Short Gamma",
-      headline: `Gamma ${gamma.toFixed(3)}`,
-      action: gammaHedge ? `Buy 1 ${gammaHedge.label}.` : "Buy 1 liquid ATM option.",
+      headline: `Gamma ${scaled.gamma.toFixed(3)}`,
+      action: gammaHedge ? `Buy ${gammaHedgeQty} ${gammaHedge.label}.` : "Buy 1 liquid ATM option.",
       why: "Near-ATM long options restore convexity most efficiently.",
       suggestedLeg: gammaHedge
         ? {
             kind: "option",
             side: "Buy",
-            quantity: 1,
+            quantity: gammaHedgeQty,
             option: gammaHedge.option,
           }
         : null,
     });
-  } else if (gamma >= 0.05) {
+  } else if (scaled.gamma >= gammaThreshold) {
     recommendations.push({
       greek: "gamma",
       severity: "low",
       status: "High Gamma",
-      headline: `Gamma +${gamma.toFixed(3)}`,
+      headline: `Gamma +${scaled.gamma.toFixed(3)}`,
       action: "Check delta more often.",
       why: "High gamma makes delta drift quickly after spot moves.",
     });
   }
 
-  const absVega = Math.abs(vega);
-  if (absVega < 1) {
+  const absScaledVega = Math.abs(scaled.vega);
+  if (absScaledVega < 50) {
     recommendations.push({
       greek: "vega",
       severity: "info",
       status: "Low Vega",
-      headline: `Vega ${vega.toFixed(3)}`,
+      headline: `Vega ₹${scaled.vega.toFixed(2)}`,
       action: null,
       why: "IV sensitivity is limited.",
     });
   } else {
     recommendations.push({
       greek: "vega",
-      severity: absVega > 3 ? "medium" : "low",
-      status: vega > 0 ? "Long Vega" : "Short Vega",
-      headline: `Vega ${vega.toFixed(3)}`,
-      action: vega > 0
-        ? `Sell 1 ${vegaHedge?.label || "liquid near-ATM option"}.`
-        : `Buy 1 ${vegaHedge?.label || "liquid near-ATM option"}.`,
+      severity: absScaledVega > 200 ? "medium" : "low",
+      status: scaled.vega > 0 ? "Long Vega" : "Short Vega",
+      headline: `Vega ₹${scaled.vega.toFixed(2)}`,
+      action: scaled.vega > 0
+        ? `Sell ${vegaHedgeQty} ${vegaHedge?.label || "liquid near-ATM option"}.`
+        : `Buy ${vegaHedgeQty} ${vegaHedge?.label || "liquid near-ATM option"}.`,
       why: "The selected contract offers strong vega with usable liquidity.",
       suggestedLeg: vegaHedge
         ? {
             kind: "option",
-            side: vega > 0 ? "Sell" : "Buy",
-            quantity: 1,
+            side: scaled.vega > 0 ? "Sell" : "Buy",
+            quantity: vegaHedgeQty,
             option: vegaHedge.option,
           }
         : null,
@@ -1008,9 +992,9 @@ function generateHedgingRecommendations(portfolioGreeks) {
     greek: "theta",
     severity: theta < -1 ? "medium" : "info",
     status: theta < 0 ? "Theta Drag" : "Theta Carry",
-    headline: `Theta ${theta.toFixed(3)}`,
-    action: theta < 0 ? "Reduce long premium if conviction fades." : null,
-    why: theta < 0 ? "Time decay is working against the position." : "Time decay is supportive.",
+    headline: `Theta ${scaled.theta.toFixed(3)}`,
+    action: scaled.theta < 0 ? "Reduce long premium if conviction fades." : null,
+    why: scaled.theta < 0 ? "Time decay is working against the position." : "Time decay is supportive.",
   });
 
   if (Math.abs(rho) >= 0.1) {
@@ -1018,7 +1002,7 @@ function generateHedgingRecommendations(portfolioGreeks) {
       greek: "rho",
       severity: "info",
       status: "Rate Risk",
-      headline: `Rho ${rho.toFixed(3)}`,
+      headline: `Rho ${scaled.rho.toFixed(3)}`,
       action: null,
       why: "Rate sensitivity is noticeable but secondary.",
     });
@@ -1028,10 +1012,10 @@ function generateHedgingRecommendations(portfolioGreeks) {
     recommendations.push({
       greek: "hedge",
       severity: Math.abs(deltaHedgeShares) > 0.25 ? "low" : "info",
-      status: "Stock Hedge",
+      status: "Liquidity-Adjusted",
       headline: `Hedge ${deltaHedgeShares.toFixed(2)} sh`,
-      action: Math.abs(deltaHedgeShares) > 0.25 ? `Adjust to ${deltaHedgeShares.toFixed(2)} sh.` : null,
-      why: "This is the current delta-neutral stock offset.",
+      action: Math.abs(deltaHedgeShares) > 0.25 ? `Trade ${deltaHedgeShares.toFixed(2)} sh after liquidity haircut.` : null,
+      why: "Full delta hedge is reduced for liquidity; residual delta remains because execution may be costly in less liquid names.",
       suggestedLeg: {
         kind: "stock",
         side: deltaHedgeShares < 0 ? "Short" : "Buy",
@@ -1046,7 +1030,24 @@ function generateHedgingRecommendations(portfolioGreeks) {
 
 function calculatePortfolioVaR(portfolio, stockPrices, config) {
   if (!portfolio.length || stockPrices.length < 2) {
-    return { parametric95: 0, parametric99: 0, historical95: 0, historical99: 0 };
+    return {
+      parametric95: 0,
+      parametric99: 0,
+      garch95: 0,
+      garch99: 0,
+      monteCarlo95: 0,
+      monteCarlo99: 0,
+      historical95: 0,
+      historical99: 0,
+      cvarParametric95: 0,
+      cvarParametric99: 0,
+      cvarGarch95: 0,
+      cvarGarch99: 0,
+      cvarMonteCarlo95: 0,
+      cvarMonteCarlo99: 0,
+      cvarHistorical95: 0,
+      cvarHistorical99: 0,
+    };
   }
 
   const pvSeries = stockPrices.map((priceNow) =>
@@ -1067,38 +1068,144 @@ function calculatePortfolioVaR(portfolio, stockPrices, config) {
     }, 0),
   );
 
-  const returns = pvSeries
+  const pnlSeries = pvSeries
     .slice(1)
-    .map((priceNow, index) => (priceNow - pvSeries[index]) / pvSeries[index])
+    .map((portfolioValueNow, index) => portfolioValueNow - pvSeries[index])
     .filter((value) => Number.isFinite(value));
 
-  if (returns.length < 2) {
-    return { parametric95: 0, parametric99: 0, historical95: 0, historical99: 0 };
+  if (pnlSeries.length < 2) {
+    return {
+      parametric95: 0,
+      parametric99: 0,
+      garch95: 0,
+      garch99: 0,
+      monteCarlo95: 0,
+      monteCarlo99: 0,
+      historical95: 0,
+      historical99: 0,
+      cvarParametric95: 0,
+      cvarParametric99: 0,
+      cvarGarch95: 0,
+      cvarGarch99: 0,
+      cvarMonteCarlo95: 0,
+      cvarMonteCarlo99: 0,
+      cvarHistorical95: 0,
+      cvarHistorical99: 0,
+    };
   }
 
-  const mean = returns.reduce((sum, value) => sum + value, 0) / returns.length;
-  const stdDev = Math.sqrt(returns.reduce((sum, value) => sum + (value - mean) ** 2, 0) / (returns.length - 1));
-  const portfolioValue = pvSeries.at(-1);
-  const sorted = [...returns].sort((a, b) => a - b);
+  const mean = pnlSeries.reduce((sum, value) => sum + value, 0) / pnlSeries.length;
+  const stdDev = Math.sqrt(pnlSeries.reduce((sum, value) => sum + (value - mean) ** 2, 0) / (pnlSeries.length - 1));
+  const sorted = [...pnlSeries].sort((a, b) => a - b);
+  const historical95Index = Math.max(0, Math.floor(0.05 * sorted.length));
+  const historical99Index = Math.max(0, Math.floor(0.01 * sorted.length));
+  const dailyLogReturns = stockPrices
+    .slice(1)
+    .map((price, index) => (stockPrices[index] > 0 && price > 0 ? Math.log(price / stockPrices[index]) : null))
+    .filter((value) => Number.isFinite(value));
+  const dailyReturnStd = dailyLogReturns.length > 1
+    ? Math.sqrt(
+      dailyLogReturns.reduce((sum, value) => sum + (value - (dailyLogReturns.reduce((inner, item) => inner + item, 0) / dailyLogReturns.length)) ** 2, 0) /
+      (dailyLogReturns.length - 1),
+    )
+    : 0;
+  const garchDailyVol = Math.max(
+    (
+      config.pricingModel === PRICING_MODEL.HIST_VOL
+        ? portfolio.reduce((sum, position) => sum + (Math.abs(position.quantity) * (position.option?.histVolatility || position.option?.iv || 0)), 0)
+          / Math.max(1, portfolio.filter((position) => position.option).length)
+        : portfolio.reduce((sum, position) => sum + (Math.abs(position.quantity) * (position.option?.iv || 0)), 0)
+          / Math.max(1, portfolio.filter((position) => position.option).length)
+    ) / Math.sqrt(252),
+    dailyReturnStd,
+    0,
+  );
+  const volScale = dailyReturnStd > 0 ? garchDailyVol / dailyReturnStd : 1;
+  const garchAdjustedStd = stdDev * volScale;
+  const monteCarloRng = mulberry32(42);
+  const monteCarloPnL = Array.from({ length: 5000 }, () => getNormal(monteCarloRng, monteCarloRng) * garchAdjustedStd).sort((a, b) => a - b);
+  const monteCarlo95Index = Math.max(0, Math.floor(0.05 * monteCarloPnL.length));
+  const monteCarlo99Index = Math.max(0, Math.floor(0.01 * monteCarloPnL.length));
+
+  const cvarFactor95 = normPdf(1.644853626951) / 0.05;
+  const cvarFactor99 = normPdf(2.32634787404) / 0.01;
+
+  const tail95 = sorted.slice(0, historical95Index + 1);
+  const tail99 = sorted.slice(0, historical99Index + 1);
+  const mcTail95 = monteCarloPnL.slice(0, monteCarlo95Index + 1);
+  const mcTail99 = monteCarloPnL.slice(0, monteCarlo99Index + 1);
 
   return {
-    parametric95: -(mean - 1.645 * stdDev) * portfolioValue,
-    parametric99: -(mean - 2.326 * stdDev) * portfolioValue,
-    historical95: -sorted[Math.floor(0.05 * sorted.length)] * portfolioValue,
-    historical99: -sorted[Math.floor(0.01 * sorted.length)] * portfolioValue,
+    parametric95: -(mean - 1.645 * stdDev),
+    parametric99: -(mean - 2.326 * stdDev),
+    garch95: Math.abs(1.645 * garchAdjustedStd),
+    garch99: Math.abs(2.326 * garchAdjustedStd),
+    monteCarlo95: Math.abs(monteCarloPnL[monteCarlo95Index] || 0),
+    monteCarlo99: Math.abs(monteCarloPnL[monteCarlo99Index] || 0),
+    historical95: -sorted[historical95Index],
+    historical99: -sorted[historical99Index],
+    cvarParametric95: -(mean - cvarFactor95 * stdDev),
+    cvarParametric99: -(mean - cvarFactor99 * stdDev),
+    cvarGarch95: Math.abs(cvarFactor95 * garchAdjustedStd),
+    cvarGarch99: Math.abs(cvarFactor99 * garchAdjustedStd),
+    cvarMonteCarlo95: mcTail95.length ? Math.abs(mcTail95.reduce((s, v) => s + v, 0) / mcTail95.length) : 0,
+    cvarMonteCarlo99: mcTail99.length ? Math.abs(mcTail99.reduce((s, v) => s + v, 0) / mcTail99.length) : 0,
+    cvarHistorical95: tail95.length ? Math.abs(tail95.reduce((s, v) => s + v, 0) / tail95.length) : 0,
+    cvarHistorical99: tail99.length ? Math.abs(tail99.reduce((s, v) => s + v, 0) / tail99.length) : 0,
   };
 }
 
-function hedgePortfolio(portfolio, lotSize, pricingModel = PRICING_MODEL.GARCH_TA) {
+function _computePercentile(values, p) {
+  const sorted = [...values].sort((a, b) => a - b);
+  const idx = Math.min(Math.floor(p * sorted.length), sorted.length - 1);
+  return sorted[idx];
+}
+
+const LIQUIDITY_REFS = (() => {
+  const profiles = Object.values(DEFAULT_MARKET_PROFILES);
+  const amihudVals = profiles.map((p) => p.amihud);
+  const turnoverVals = profiles.map((p) => p.turnoverCr);
+  return {
+    amihudRef: _computePercentile(amihudVals, 0.75),
+    turnoverRef: _computePercentile(turnoverVals, 0.50),
+  };
+})();
+
+function computeLiquidityHedgeRatio(liquidityProfile = {}) {
+  const amihud = Number(liquidityProfile.amihud || 0);
+  const turnoverCr = Number(liquidityProfile.turnoverCr || 0);
+  const amihudRatio = Number.isFinite(amihud) && amihud > 0
+    ? clamp(1 - amihud / LIQUIDITY_REFS.amihudRef, 0.65, 1)
+    : 1;
+  const turnoverRatio = turnoverCr > 0
+    ? clamp(0.7 + 0.3 * Math.min(1, Math.log(turnoverCr + 1) / Math.log(LIQUIDITY_REFS.turnoverRef + 1)), 0.7, 1)
+    : 0.85;
+  return Math.sqrt(amihudRatio * turnoverRatio);
+}
+
+function hedgePortfolio(portfolio, lotSize, pricingModel = PRICING_MODEL.GARCH_TA, liquidityProfile = {}) {
   const greeks = calculatePortfolioGreeks(portfolio, pricingModel);
-  return { deltaHedgeShares: -greeks.delta * lotSize };
+  const fullDeltaHedgeShares = -greeks.delta * lotSize;
+  const hedgeRatio = computeLiquidityHedgeRatio(liquidityProfile);
+  const deltaHedgeShares = fullDeltaHedgeShares * hedgeRatio;
+  return {
+    deltaHedgeShares,
+    fullDeltaHedgeShares,
+    liquidityAdjustedShares: deltaHedgeShares,
+    hedgeRatio,
+    residualDeltaShares: fullDeltaHedgeShares - deltaHedgeShares,
+    liquidityProxy: {
+      amihud: liquidityProfile.amihud ?? null,
+      turnoverCr: liquidityProfile.turnoverCr ?? null,
+    },
+  };
 }
 
 function calculatePnLScenarios(portfolio, lastPrice, config) {
   const scenarios = [-0.02, -0.01, 0.0, 0.01, 0.02];
   const r = config.riskFreeRate / 100;
   const currentValue = portfolio.reduce((sum, position) => sum + position.quantity * getOptionPriceByModel(position.option, config.pricingModel), 0);
-  const { deltaHedgeShares } = hedgePortfolio(portfolio, config.lotSize, config.pricingModel);
+  const { deltaHedgeShares } = hedgePortfolio(portfolio, config.lotSize, config.pricingModel, config.liquidityProfile);
 
   return scenarios.map((change) => {
     const newPrice = lastPrice * (1 + change);
@@ -1236,10 +1343,12 @@ function generateStrategy(type, currentPrice, optionChain) {
   }
 
   if (type === STRATEGY_TYPE.IRON_CONDOR) {
-    const shortPut = [...puts].reverse().find((option) => option.strike < currentPrice * 0.95);
-    const longPut = [...puts].reverse().find((option) => option.strike < (shortPut?.strike || 0));
-    const shortCall = calls.find((option) => option.strike > currentPrice * 1.05);
-    const longCall = calls.find((option) => option.strike > (shortCall?.strike || 0));
+    const shortPutCandidates = [...puts].filter((option) => option.strike < currentPrice);
+    const shortPut = shortPutCandidates.at(-1) || null;
+    const longPut = shortPut ? [...puts].reverse().find((option) => option.strike < shortPut.strike) : null;
+    const shortCallCandidates = calls.filter((option) => option.strike > currentPrice);
+    const shortCall = shortCallCandidates[0] || null;
+    const longCall = shortCall ? calls.find((option) => option.strike > shortCall.strike) : null;
     if (shortPut && longPut && shortCall && longCall) {
       legs = [
         { option: longPut, quantity: 1 },
@@ -1288,6 +1397,38 @@ function calculateStrategyPnL(strategy, targetPrice, elapsedDays, targetIVChange
 }
 
 function exportDataToCSV(report) {
+  const optionRows = Object.entries(report.optionChain || {}).flatMap(([maturity, options]) =>
+    (options || []).map((option) => {
+      const garchGreeks = option.greeks || {};
+      const histGreeks = option.greeksHistVol || {};
+      return [
+        option.id,
+        option.type,
+        option.strike,
+        maturity,
+        option.expiryDate || option.expiry_date || "",
+        option.marketPrice ?? "",
+        option.iv ?? "",
+        option.histVolatility ?? "",
+        option.bsmPrice ?? "",
+        option.bsmPriceHistVol ?? "",
+        garchGreeks.delta ?? "",
+        garchGreeks.gamma ?? "",
+        garchGreeks.vega ?? "",
+        garchGreeks.theta ?? "",
+        garchGreeks.rho ?? "",
+        histGreeks.delta ?? "",
+        histGreeks.gamma ?? "",
+        histGreeks.vega ?? "",
+        histGreeks.theta ?? "",
+        histGreeks.rho ?? "",
+        option.openInterest ?? "",
+        option.volume ?? "",
+        option.source ?? "",
+        option.provider ?? "",
+      ];
+    }),
+  );
   const rows = [
     ["Ticker", report.ticker],
     ["Last Price", report.stock.lastPrice.toFixed(4)],
@@ -1298,11 +1439,93 @@ function exportDataToCSV(report) {
     [],
     ["Date", "Close"],
     ...report.stock.historicalData.map((row) => [row.date, row.price.toFixed(4)]),
+    [],
+    ["Option Analytics"],
+    [
+      "Option ID",
+      "Type",
+      "Strike",
+      "Maturity Days",
+      "Expiry Date",
+      "Market Price",
+      "GARCH-TA IV",
+      "Historical Volatility",
+      "Option Price BSM GARCH-TA",
+      "Option Price BSM Historical Vol",
+      "GARCH Delta",
+      "GARCH Gamma",
+      "GARCH Vega",
+      "GARCH Theta",
+      "GARCH Rho",
+      "HistVol Delta",
+      "HistVol Gamma",
+      "HistVol Vega",
+      "HistVol Theta",
+      "HistVol Rho",
+      "Open Interest",
+      "Volume",
+      "Source",
+      "Provider",
+    ],
+    ...optionRows,
   ];
   return rows.map((row) => row.map((cell) => `"${cell ?? ""}"`).join(",")).join("\n");
 }
 
-export async function buildAnalyticsReport({ ticker, startDate, endDate, riskFreeRate = 7, lotSize = 1 }) {
+function buildReportShell({ ticker, stock, liveQuote, summaryStats, garchVolatility, volatilitySignals }) {
+  return {
+    ticker,
+    stock,
+    liveQuote,
+    summaryStats,
+    garchVolatility,
+    volatilitySignals,
+    optionChain: {},
+    portfolio: [],
+    portfolioGreeks: { delta: 0, gamma: 0, vega: 0, theta: 0, rho: 0 },
+    portfolioValue: 0,
+    hedge: { deltaHedgeShares: 0 },
+    pnlScenarios: [],
+    varResult: {
+      parametric95: 0,
+      parametric99: 0,
+      garch95: 0,
+      garch99: 0,
+      monteCarlo95: 0,
+      monteCarlo99: 0,
+      historical95: 0,
+      historical99: 0,
+    },
+    strategies: [],
+    liquidityStudy: null,
+    marketProfile: DEFAULT_MARKET_PROFILES[ticker] || {
+      liquidity: "MED",
+      turnoverCr: 40,
+      beta: 1,
+      marketCap: "N/A",
+      amihud: 0.002,
+    },
+    dataSource: {
+      stock: stock.source || "backend_live",
+      options: "loading",
+      provider: stock.provider || "backend",
+    },
+    exportCsv: () => exportDataToCSV({ ticker, stock, summaryStats }),
+    calculateStrategyPnL: (strategy, targetPrice, elapsedDays, ivChange) =>
+      calculateStrategyPnL(strategy, targetPrice, elapsedDays, ivChange, 7),
+    pricingFramework: {
+      source: "Historical prices (yfinance) -> GARCH(1,1)-style conditional volatility -> Transform-Augmented IV -> BSM pricing",
+      labels: {
+        garchTa: "GARCH-TA Model Price",
+        histVol: "BSM (Hist Vol) Price",
+      },
+      targetContracts: ["ATM Call / Put", "OTM Call (+7.5%)", "OTM Put (-7.5%)", "30-day", "60-day"],
+    },
+    derivativesReady: false,
+  };
+}
+
+export async function buildStockSummaryReport({ ticker, startDate, endDate }) {
   const stock = await getStockData(ticker, startDate, endDate);
   const prices = stock.historicalData.map((row) => row.price);
   const summaryStats = calculateSummaryStatistics(prices);
@@ -1310,7 +1533,7 @@ export async function buildAnalyticsReport({ ticker, startDate, endDate, riskFre
   const volatilitySignals = computeRollingVolatilitySignals(prices, garchVolatility, 20);
   const historyClose = prices.at(-1) ?? stock.lastPrice;
   const historyPreviousClose = prices.at(-2) ?? historyClose;
-  const rawLiveQuote = stock.liveQuote || generateLiveStockData(ticker, stock.lastPrice);
+  const rawLiveQuote = stock.liveQuote || {};
   const liveQuote = {
     ...rawLiveQuote,
     close: Number.isFinite(rawLiveQuote?.close) ? rawLiveQuote.close : historyClose,
@@ -1323,6 +1546,12 @@ export async function buildAnalyticsReport({ ticker, startDate, endDate, riskFre
     low: Number.isFinite(rawLiveQuote?.low) ? rawLiveQuote.low : Math.min(historyClose, historyPreviousClose),
     volume: Number.isFinite(rawLiveQuote?.volume) ? rawLiveQuote.volume : 0,
   };
+  return buildReportShell({ ticker, stock, liveQuote, summaryStats, garchVolatility, volatilitySignals });
+}
+
+export async function buildDerivativesReport(baseReport, { riskFreeRate = 7, lotSize = 1 } = {}) {
+  const { ticker, stock, summaryStats, garchVolatility } = baseReport;
+  const prices = stock.historicalData.map((row) => row.price);
   const optionChain = await getOptionChain(
     ticker,
     stock.lastPrice,
@@ -1334,29 +1563,14 @@ export async function buildAnalyticsReport({ ticker, startDate, endDate, riskFre
   const portfolio = defaultStrategy?.legs || [];
   const portfolioGreeks = calculatePortfolioGreeks(portfolio);
   const portfolioValue = calculatePortfolioValue(portfolio, lotSize);
-  const hedge = hedgePortfolio(portfolio, lotSize);
-  const pnlScenarios = calculatePnLScenarios(portfolio, stock.lastPrice, { riskFreeRate, lotSize });
+  const hedge = hedgePortfolio(portfolio, lotSize, PRICING_MODEL.GARCH_TA, baseReport.marketProfile);
+  const pnlScenarios = calculatePnLScenarios(portfolio, stock.lastPrice, { riskFreeRate, lotSize, liquidityProfile: baseReport.marketProfile });
   const varResult = calculatePortfolioVaR(portfolio, prices, { riskFreeRate, lotSize });
   const strategies = Object.values(STRATEGY_TYPE)
     .map((type) => generateStrategy(type, stock.lastPrice, optionChain))
     .filter(Boolean);
-  const { liquidTicker, illiquidTicker } = pickLiquidityPair(ticker);
-  const [liquidStock, illiquidStock] = await Promise.all([
-    getStockData(liquidTicker, startDate, endDate),
-    getStockData(illiquidTicker, startDate, endDate),
-  ]);
-  const liquidityStudy = {
-    liquid: buildLiquidityAnalysis(liquidTicker, liquidStock, DEFAULT_MARKET_PROFILES[liquidTicker]),
-    illiquid: buildLiquidityAnalysis(illiquidTicker, illiquidStock, DEFAULT_MARKET_PROFILES[illiquidTicker]),
-  };
-
   return {
-    ticker,
-    stock,
-    liveQuote,
-    summaryStats,
-    garchVolatility,
-    volatilitySignals,
+    ...baseReport,
     optionChain,
     portfolio,
     portfolioGreeks,
@@ -1365,16 +1579,8 @@ export async function buildAnalyticsReport({ ticker, startDate, endDate, riskFre
     pnlScenarios,
     varResult,
     strategies,
-    liquidityStudy,
-    marketProfile: DEFAULT_MARKET_PROFILES[ticker] || {
-      liquidity: "MED",
-      turnoverCr: 40,
-      beta: 1,
-      marketCap: "N/A",
-      amihud: 0.002,
-    },
     dataSource: {
-      stock: stock.source || "simulation",
+      ...baseReport.dataSource,
       options:
         Object.values(optionChain).flat()[0]?.source ||
         "simulation",
@@ -1383,17 +1589,30 @@ export async function buildAnalyticsReport({ ticker, startDate, endDate, riskFre
         Object.values(optionChain).flat()[0]?.provider ||
         "simulation",
     },
-    exportCsv: () => exportDataToCSV({ ticker, stock, summaryStats }),
     calculateStrategyPnL: (strategy, targetPrice, elapsedDays, ivChange) =>
       calculateStrategyPnL(strategy, targetPrice, elapsedDays, ivChange, riskFreeRate),
-    pricingFramework: {
-      source: "Historical prices (yfinance) -> GARCH(1,1)-style conditional volatility -> Transform-Augmented IV -> BSM pricing",
-      labels: {
-        garchTa: "GARCH-TA Model Price",
-        histVol: "BSM (Hist Vol) Price",
-      },
-      targetContracts: ["ATM Call / Put", "OTM Call (+7.5%)", "OTM Put (-7.5%)", "30-day", "60-day"],
-    },
+    derivativesReady: true,
+  };
+}
+
+export async function buildAnalyticsReport({ ticker, startDate, endDate, riskFreeRate = 7, lotSize = 1 }) {
+  const stockReport = await buildStockSummaryReport({ ticker, startDate, endDate });
+  return buildDerivativesReport(stockReport, { riskFreeRate, lotSize });
+}
+
+export async function buildLiquidityComparisonReport({ liquidTicker, illiquidTicker, startDate, endDate }) {
+  if (!liquidTicker || !illiquidTicker || liquidTicker === illiquidTicker) {
+    return null;
+  }
+
+  const [liquidStock, illiquidStock] = await Promise.all([
+    getStockData(liquidTicker, startDate, endDate),
+    getStockData(illiquidTicker, startDate, endDate),
+  ]);
+
+  return {
+    liquid: buildLiquidityAnalysis(liquidTicker, liquidStock, DEFAULT_MARKET_PROFILES[liquidTicker]),
+    illiquid: buildLiquidityAnalysis(illiquidTicker, illiquidStock, DEFAULT_MARKET_PROFILES[illiquidTicker]),
   };
 }
 
@@ -1402,6 +1621,7 @@ export {
   OPTION_TYPE,
   PRICING_MODEL,
   STRATEGY_TYPE,
+  bsm,
   buildUserPortfolio,
   calculatePortfolioGreeks,
   calculatePortfolioGrossCost,
@@ -1414,6 +1634,7 @@ export {
   generateHedgingRecommendations,
   getOptionGreeksByModel,
   getOptionPriceByModel,
+  getStockData,
   hedgePortfolio,
   inferStrikeStep,
   snapToStrike,

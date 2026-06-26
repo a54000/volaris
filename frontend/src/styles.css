@@ -36,6 +36,42 @@ select {
   font: inherit;
 }
 
+.strat-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 6px 0 12px;
+}
+
+.strat-tab {
+  border: 1px solid var(--brd2);
+  border-radius: 6px;
+  background: var(--bg2);
+  color: var(--txt1);
+  cursor: pointer;
+  font-family: sans-serif;
+  font-size: 12px;
+  padding: 6px 10px;
+  transition: opacity 0.15s ease, filter 0.15s ease, background 0.15s ease;
+}
+
+.strat-tab.active {
+  border-color: var(--amber);
+  background: rgba(240, 165, 0, 0.16);
+  color: var(--amber);
+}
+
+.strat-tab:disabled,
+.strat-tab.disabled {
+  background: #20242b;
+  border-color: #2a3038;
+  color: var(--txt3);
+  cursor: not-allowed;
+  filter: grayscale(1);
+  opacity: 0.38;
+  text-decoration: line-through;
+}
+
 #root {
   min-height: 100vh;
 }
@@ -914,6 +950,22 @@ select {
   margin-bottom: 12px;
 }
 
+.screener-help {
+  border: 1px solid rgba(0, 212, 255, 0.18);
+  background: rgba(0, 212, 255, 0.06);
+  border-radius: 8px;
+  color: var(--txt2);
+  font-family: sans-serif;
+  font-size: 12px;
+  line-height: 1.45;
+  margin-bottom: 12px;
+  padding: 9px 11px;
+}
+
+.screener-help strong {
+  color: var(--cyan);
+}
+
 .screener-filters {
   display: flex;
   gap: 8px;
@@ -945,6 +997,86 @@ select {
   display: inline-flex;
   align-items: center;
   gap: 4px;
+}
+
+.screener-row {
+  cursor: pointer;
+}
+
+.screener-action-btn {
+  border: 1px solid var(--brd2);
+  border-radius: 999px;
+  background: var(--bg2);
+  color: var(--txt1);
+  cursor: pointer;
+  font-family: sans-serif;
+  font-size: 11px;
+  padding: 4px 8px;
+}
+
+.screener-action-btn.liquid {
+  border-color: rgba(0, 212, 255, 0.35);
+  color: var(--cyan);
+}
+
+.screener-action-btn.illiquid {
+  border-color: rgba(248, 81, 73, 0.35);
+  color: #ff7b72;
+}
+
+.screener-muted {
+  color: var(--txt3);
+  font-family: sans-serif;
+  font-size: 11px;
+}
+
+.chart-empty-state {
+  min-height: 210px;
+  border: 1px dashed var(--brd2);
+  border-radius: 10px;
+  background: rgba(13, 17, 23, 0.35);
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  padding: 20px;
+  text-align: center;
+}
+
+.chart-empty-title {
+  color: var(--txt1);
+  font-family: sans-serif;
+  font-size: 14px;
+  font-weight: 700;
+  margin-bottom: 6px;
+}
+
+.chart-empty-copy {
+  color: var(--txt2);
+  font-family: sans-serif;
+  font-size: 12px;
+  max-width: 520px;
+}
+
+.inner-card {
+  margin-top: 16px;
+  background: rgba(13, 17, 23, 0.25);
+}
+
+.scenario-controls {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 14px;
+  margin: 12px 0;
+}
+
+.scenario-controls label {
+  color: var(--txt2);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  font-family: sans-serif;
+  font-size: 12px;
 }
 
 .screener-row.selected-liquid td {
@@ -1105,6 +1237,80 @@ select {
   margin-bottom: 10px;
 }
 
+.liquidity-header-card {
+  padding: 14px 18px;
+}
+
+.liquidity-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+
+.liquidity-header-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.liquidity-subtle-copy {
+  margin: 0;
+  color: var(--txt2);
+  font-family: sans-serif;
+  font-size: 12px;
+}
+
+.liquidity-selector-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.liquidity-selector {
+  gap: 8px;
+}
+
+.liquidity-selector .select-wrap select {
+  min-width: 170px;
+}
+
+.liquidity-selector-divider {
+  color: var(--txt3);
+  font-family: sans-serif;
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+.liquidity-empty-state {
+  min-height: 96px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 6px;
+}
+
+.liquidity-empty-state-warning {
+  border-color: #4e3f20;
+}
+
+.liquidity-empty-title {
+  color: var(--txt1);
+  font-size: 16px;
+  font-weight: 600;
+  font-family: sans-serif;
+}
+
+.liquidity-empty-copy {
+  color: var(--txt2);
+  font-size: 12px;
+  font-family: sans-serif;
+  max-width: 540px;
+}
+
 .inline-note {
   margin: 0 0 10px;
   color: var(--txt2);
@@ -1259,6 +1465,18 @@ select {
 
   .topbar-right {
     margin-left: 0;
+  }
+
+  .liquidity-toolbar {
+    align-items: flex-start;
+  }
+
+  .liquidity-selector-row {
+    width: 100%;
+  }
+
+  .liquidity-selector .select-wrap select {
+    min-width: 150px;
   }
 
   .vol-grid,

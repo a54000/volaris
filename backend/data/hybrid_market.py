@@ -1,11 +1,17 @@
 from __future__ import annotations
 
 from datetime import datetime
+import importlib
 
 try:
     import yfinance as yf
 except ImportError:  # pragma: no cover - handled at runtime
     yf = None  # type: ignore[assignment]
+
+try:
+    from nsefin import NSEClient
+except ImportError:  # pragma: no cover - optional dependency
+    NSEClient = None  # type: ignore[assignment]
 
 from backend.data.angel_market import fetch_live_option_quotes_angel
 from backend.data.options import fetch_live_option_quotes
@@ -15,6 +21,116 @@ from backend.data.strike_scheme import build_target_strikes, get_symbol_strike_s
 def _require_yfinance() -> None:
     if yf is None:
         raise RuntimeError("yfinance_not_installed")
+
+
+def _normalize_stock_quote_payload(payload: dict, fallback_symbol: str) -> dict | None:
+    if not isinstance(payload, dict):
+        return None
+
+    def pick_number(*keys: str) -> float | int | None:
+        for key in keys:
+            value = payload.get(key)
+            if isinstance(value, (int, float)):
+                return value
+            if isinstance(value, str):
+                try:
+                    cleaned = value.replace(",", "").strip()
+                    if cleaned:
+                        return float(cleaned)
+                except ValueError:
+                    continue
+        return None
+
+    open_value = pick_number("open", "dayOpen", "openPrice")
+    high_value = pick_number("high", "dayHigh", "intraDayHighLow.max", "highPrice")
+    low_value = pick_number("low", "dayLow", "intraDayHighLow.min", "lowPrice")
+    close_value = pick_number("close", "lastPrice", "ltp", "price", "last")
+    previous_close = pick_number("previousClose", "previous_close", "prevClose", "closePrice")
+    volume = pick_number("volume", "totalTradedVolume", "tradedVolume")
+
+    if close_value is None:
+        return None
+
+    return {
+        "symbol": payload.get("symbol") or payload.get("ticker") or fallback_symbol,
+        "open": float(open_value) if open_value is not None else None,
+        "high": float(high_value) if high_value is not None else None,
+        "low": float(low_value) if low_value is not None else None,
+        "close": float(close_value),
+        "previous_close": float(previous_close) if previous_close is not None else None,
+        "volume": int(volume) if volume is not None else None,
+    }
+
+
+def _call_quote_provider(target: object, symbol: str) -> dict | None:
+    candidate_methods = (
+        "get_quote",
+        "stock_quote",
+        "quote",
+        "equity_quote",
+        "equity_info",
+        "price_info",
+    )
+    bare_symbol = symbol.replace(".NS", "")
+    for method_name in candidate_methods:
+        method = getattr(target, method_name, None)
+        if not callable(method):
+            continue
+        for candidate_symbol in (bare_symbol, symbol):
+            try:
+                payload = method(candidate_symbol)
+            except TypeError:
+                continue
+            except Exception:
+                break
+            normalized = _normalize_stock_quote_payload(payload, bare_symbol)
+            if normalized:
+                return normalized
+    return None
+
+
+def _fetch_nse_stock_quote(symbol: str) -> tuple[dict | None, str | None]:
+    bare_symbol = symbol.replace(".NS", "")
+
+    if NSEClient is not None:
+        try:
+            client = NSEClient()
+            payload = client._get_json(  # type: ignore[attr-defined]
+                client.endpoints.QUOTE_EQUITY,  # type: ignore[attr-defined]
+                params={"symbol": bare_symbol},
+                ref_path=client.endpoints.REF_LIVE_EQ_MARKET,  # type: ignore[attr-defined]
+            )
+            normalized = _normalize_stock_quote_payload(payload if isinstance(payload, dict) else {}, bare_symbol)
+            if normalized:
+                return normalized, "nsefin"
+        except Exception:
+            pass
+
+    candidates = ("nsepython",)
+    class_candidates = ("NSE", "NSEfin", "Nse")
+    for module_name in candidates:
+        try:
+            module = importlib.import_module(module_name)
+        except Exception:
+            continue
+
+        direct_result = _call_quote_provider(module, bare_symbol)
+        if direct_result:
+            return direct_result, module_name
+
+        for class_name in class_candidates:
+            cls = getattr(module, class_name, None)
+            if cls is None:
+                continue
+            try:
+                instance = cls()
+            except Exception:
+                continue
+            instance_result = _call_quote_provider(instance, bare_symbol)
+            if instance_result:
+                return instance_result, module_name
+
+    return None, None
 
 def fetch_stock_history(ticker: str, start_date: str, end_date: str) -> dict:
     _require_yfinance()
@@ -41,19 +157,21 @@ def fetch_stock_history(ticker: str, start_date: str, end_date: str) -> dict:
 
     last = rows[-1]
     previous_close = rows[-2]["close"] if len(rows) > 1 else last["close"]
+    nse_quote, nse_provider = _fetch_nse_stock_quote(symbol)
+    live_quote = {
+        "open": nse_quote["open"] if nse_quote and nse_quote.get("open") is not None else last["open"],
+        "high": nse_quote["high"] if nse_quote and nse_quote.get("high") is not None else last["high"],
+        "low": nse_quote["low"] if nse_quote and nse_quote.get("low") is not None else last["low"],
+        "close": nse_quote["close"] if nse_quote and nse_quote.get("close") is not None else last["close"],
+        "previous_close": nse_quote["previous_close"] if nse_quote and nse_quote.get("previous_close") is not None else previous_close,
+        "volume": nse_quote["volume"] if nse_quote and nse_quote.get("volume") is not None else last["volume"],
+    }
     return {
         "ticker": symbol,
-        "provider": "yfinance",
+        "provider": nse_provider or "yfinance",
         "source": "backend_live",
-        "last_price": last["close"],
-        "live_quote": {
-            "open": last["open"],
-            "high": last["high"],
-            "low": last["low"],
-            "close": last["close"],
-            "previous_close": previous_close,
-            "volume": last["volume"],
-        },
+        "last_price": live_quote["close"],
+        "live_quote": live_quote,
         "historical_data": [
             {
                 "date": row["date"],

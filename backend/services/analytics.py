@@ -119,7 +119,23 @@ def _build_options_analytics_uncached(months: int = 6, risk_free_rate: float = 0
                 risk_free_rate,
                 max(historical_vol, 1e-6),
             )
+            hist_greeks = black_scholes_greeks(
+                definition["option_type"],
+                spot,
+                definition["strike"],
+                time_to_expiry,
+                risk_free_rate,
+                max(historical_vol, 1e-6),
+            )
             garch_quote = black_scholes_price(
+                definition["option_type"],
+                spot,
+                definition["strike"],
+                time_to_expiry,
+                risk_free_rate,
+                max(garch_vol, 1e-6),
+            )
+            garch_greeks = black_scholes_greeks(
                 definition["option_type"],
                 spot,
                 definition["strike"],
@@ -141,8 +157,24 @@ def _build_options_analytics_uncached(months: int = 6, risk_free_rate: float = 0
                     "market_implied_volatility": round(live_quote.implied_volatility / 100.0, 6) if live_quote and live_quote.implied_volatility is not None else None,
                     "market_volume": live_quote.volume if live_quote is not None else None,
                     "market_open_interest": live_quote.open_interest if live_quote is not None else None,
+                    "historical_volatility": round(historical_vol, 6),
+                    "garch_volatility": round(garch_vol, 6),
                     "bsm_historical_vol_price": round(hist_quote.price, 4),
                     "bsm_garch_vol_price": round(garch_quote.price, 4),
+                    "greeks_historical_vol": {
+                        "delta": round(hist_greeks.delta, 6),
+                        "gamma": round(hist_greeks.gamma, 6),
+                        "vega": round(hist_greeks.vega, 6),
+                        "theta": round(hist_greeks.theta, 6),
+                        "rho": round(hist_greeks.rho, 6),
+                    },
+                    "greeks_garch_vol": {
+                        "delta": round(garch_greeks.delta, 6),
+                        "gamma": round(garch_greeks.gamma, 6),
+                        "vega": round(garch_greeks.vega, 6),
+                        "theta": round(garch_greeks.theta, 6),
+                        "rho": round(garch_greeks.rho, 6),
+                    },
                 }
             )
 
@@ -179,6 +211,16 @@ def build_options_analytics(months: int = 6, risk_free_rate: float = 0.07) -> di
 def _build_portfolio_analytics_uncached(months: int = 6, risk_free_rate: float = 0.07) -> dict:
     snapshot, _, _ = get_snapshot_bundle(months)
     chosen = snapshot["liquid_bucket"][:1] + snapshot["illiquid_bucket"][:1]
+
+    all_stocks = snapshot.get("all_stocks", [])
+    amihud_vals = sorted([s["average_amihud_illiquidity"] for s in all_stocks if s.get("average_amihud_illiquidity") is not None])
+    turnover_vals = sorted([s["average_turnover"] for s in all_stocks if s.get("average_turnover") is not None])
+
+    n_amihud = len(amihud_vals)
+    n_turnover = len(turnover_vals)
+    amihud_ref = amihud_vals[min(int(0.75 * n_amihud), n_amihud - 1)] if n_amihud > 0 else 1.0
+    turnover_ref_cr = (turnover_vals[min(int(0.50 * n_turnover), n_turnover - 1)] / 10_000_000) if n_turnover > 0 else 1.0
+
     portfolios: list[dict] = []
 
     for stock in chosen:
@@ -198,7 +240,14 @@ def _build_portfolio_analytics_uncached(months: int = 6, risk_free_rate: float =
         portfolio_gamma = position.quantity * position.gamma
         portfolio_vega = position.quantity * position.vega
         hedge_shares = delta_hedge_shares(portfolio_delta)
-        adjusted_hedge = liquidity_adjusted_hedge_shares(hedge_shares, stock["average_amihud_illiquidity"])
+        turnover_cr = (stock.get("average_turnover") or 0) / 10_000_000
+        adjusted_hedge = liquidity_adjusted_hedge_shares(
+            hedge_shares,
+            stock["average_amihud_illiquidity"],
+            amihud_ref=amihud_ref,
+            turnover_cr=turnover_cr,
+            turnover_ref=turnover_ref_cr,
+        )
 
         portfolios.append(
             {

@@ -17,7 +17,31 @@ def build_workbook_bytes(months: int = 6, risk_free_rate: float = 0.07) -> bytes
     portfolio_data = build_portfolio_analytics(months=months, risk_free_rate=risk_free_rate)
     risk_data = build_risk_analytics(months=months)
 
-    summary_sheet.append(["Symbol", "Contract", "Strike", "Expiry", "Market Price", "Market Source", "BSM Hist", "BSM GARCH"])
+    summary_sheet.append(
+        [
+            "Symbol",
+            "Contract",
+            "Strike",
+            "Expiry",
+            "Market Price",
+            "Market Source",
+            "Market IV",
+            "Historical Vol",
+            "GARCH IV",
+            "BSM Hist",
+            "BSM GARCH",
+            "Hist Delta",
+            "Hist Gamma",
+            "Hist Vega",
+            "Hist Theta",
+            "Hist Rho",
+            "GARCH Delta",
+            "GARCH Gamma",
+            "GARCH Vega",
+            "GARCH Theta",
+            "GARCH Rho",
+        ]
+    )
     for cell in summary_sheet[1]:
         cell.font = Font(bold=True)
     for symbol_block in options_data["symbols"]:
@@ -30,8 +54,21 @@ def build_workbook_bytes(months: int = 6, risk_free_rate: float = 0.07) -> bytes
                     contract["expiry_date"],
                     contract["market_price"],
                     contract["market_price_source"],
+                    contract["market_implied_volatility"],
+                    contract["historical_volatility"],
+                    contract["garch_volatility"],
                     contract["bsm_historical_vol_price"],
                     contract["bsm_garch_vol_price"],
+                    contract["greeks_historical_vol"]["delta"],
+                    contract["greeks_historical_vol"]["gamma"],
+                    contract["greeks_historical_vol"]["vega"],
+                    contract["greeks_historical_vol"]["theta"],
+                    contract["greeks_historical_vol"]["rho"],
+                    contract["greeks_garch_vol"]["delta"],
+                    contract["greeks_garch_vol"]["gamma"],
+                    contract["greeks_garch_vol"]["vega"],
+                    contract["greeks_garch_vol"]["theta"],
+                    contract["greeks_garch_vol"]["rho"],
                 ]
             )
 

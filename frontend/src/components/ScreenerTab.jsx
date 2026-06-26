@@ -16,8 +16,25 @@ function formatNumber(value, digits = 4) {
 function formatAmihud(value) {
   const numeric = Number(value || 0);
   if (numeric === 0) return "0";
-  if (Math.abs(numeric) < 0.0001) return numeric.toExponential(2);
+  if (Math.abs(numeric) < 0.0001) {
+    const exponent = Math.floor(Math.log10(Math.abs(numeric)));
+    const mantissa = numeric / (10 ** exponent);
+    return `${mantissa.toFixed(2)} x 10^${exponent}`;
+  }
   return numeric.toFixed(6);
+}
+
+function toSelection(row, fallback) {
+  if (!row) return fallback;
+  return {
+    ticker: row.ticker,
+    rank: row.rank,
+    turnover_cr: row.avg_daily_turnover_cr,
+    amihud: row.amihud,
+    realized_vol: row.realized_vol,
+    garch_iv: row.garch_iv,
+    data_source: row.data_source,
+  };
 }
 
 export default function ScreenerTab({
@@ -62,8 +79,13 @@ export default function ScreenerTab({
     );
   }
 
-  const liquid = screener.liquid_selection;
-  const illiquid = screener.illiquid_selection;
+  const selectedLiquidRow = (screener.ranked || []).find((row) => row.ticker === liquidTicker);
+  const selectedIlliquidRow = (screener.ranked || []).find((row) => row.ticker === illiquidTicker);
+  const liquid = toSelection(selectedLiquidRow, screener.liquid_selection);
+  const illiquid = toSelection(selectedIlliquidRow, screener.illiquid_selection);
+  const justification = screener.justification
+    ?.replace(/Amihud ratio of [\d.]+(?: x 10\^-?\d+)?/, `Amihud ratio of ${formatAmihud(liquid.amihud)}`)
+    ?.replace(/Amihud [\d.]+(?: x 10\^-?\d+)? \(bottom 25%\)/, `Amihud ${formatAmihud(illiquid.amihud)} (bottom 25%)`);
 
   return (
     <>
@@ -85,7 +107,7 @@ export default function ScreenerTab({
             <div className="selection-line">Hist Vol: {formatPercent(liquid.realized_vol)}</div>
             <div className="selection-line">GARCH IV: {formatPercent(liquid.garch_iv)}</div>
             <div className="selection-line">Source: {liquid.data_source === "live" ? "Live" : "Fallback"}</div>
-            <div className="selection-pill">✓ Selected — Liquid</div>
+            <div className="selection-pill">{liquidTicker ? "✓ Selected — Liquid" : "Auto pick — Liquid"}</div>
           </div>
 
           <div className="screener-selection-card illiquid">
@@ -96,7 +118,7 @@ export default function ScreenerTab({
             <div className="selection-line">Hist Vol: {formatPercent(illiquid.realized_vol)}</div>
             <div className="selection-line">GARCH IV: {formatPercent(illiquid.garch_iv)}</div>
             <div className="selection-line">Source: {illiquid.data_source === "live" ? "Live" : "Fallback"}</div>
-            <div className="selection-pill">✓ Selected — Illiquid</div>
+            <div className="selection-pill">{illiquidTicker ? "✓ Selected — Illiquid" : "Auto pick — Illiquid"}</div>
           </div>
         </div>
 
@@ -111,7 +133,11 @@ export default function ScreenerTab({
 
         <div className="screener-justification">
           <div className="section-label">Justification</div>
-          <p>{screener.justification}</p>
+          <p>{justification}</p>
+        </div>
+
+        <div className="screener-help">
+          Select comparison stocks here: choose a <strong>TOP 25%</strong> row as the liquid stock and a <strong>BOTTOM 25%</strong> row as the illiquid stock. The Liquidity Comparison tab will use those two selections.
         </div>
 
         <div className="screener-filters">
@@ -150,23 +176,34 @@ export default function ScreenerTab({
                 <th>Vol%</th>
                 <th>Tier</th>
                 <th>Source</th>
+                <th>Compare</th>
               </tr>
             </thead>
             <tbody>
               {filteredRows.map((row) => {
                 const isLiquid = row.ticker === liquidTicker;
                 const isIlliquid = row.ticker === illiquidTicker;
+                const canSelectLiquid = row.quartile_bucket === "TOP 25%";
+                const canSelectIlliquid = row.quartile_bucket === "BOTTOM 25%";
                 return (
                   <tr
                     key={row.ticker}
                     className={`screener-row ${isLiquid ? "selected-liquid" : ""} ${isIlliquid ? "selected-illiquid" : ""}`}
+                    onClick={() => {
+                      if (canSelectLiquid) onSelectLiquid(row.ticker);
+                      if (canSelectIlliquid) onSelectIlliquid(row.ticker);
+                    }}
                   >
                     <td>{row.rank}</td>
                     <td style={{ textAlign: "left" }}>
                       <button
                         type="button"
                         className="screener-stock-button"
-                        onClick={() => (row.quartile_bucket === "TOP 25%" ? onSelectLiquid(row.ticker) : row.quartile_bucket === "BOTTOM 25%" ? onSelectIlliquid(row.ticker) : null)}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          if (canSelectLiquid) onSelectLiquid(row.ticker);
+                          if (canSelectIlliquid) onSelectIlliquid(row.ticker);
+                        }}
                       >
                         {isLiquid || isIlliquid ? "★" : ""}
                         {row.ticker}
@@ -185,6 +222,19 @@ export default function ScreenerTab({
                       <span className={`badge ${row.data_source === "live" ? "badge-provider" : "badge-low"}`}>
                         {row.data_source === "live" ? "LIVE" : "FALLBACK"}
                       </span>
+                    </td>
+                    <td>
+                      {canSelectLiquid ? (
+                        <button type="button" className="screener-action-btn liquid" onClick={(event) => { event.stopPropagation(); onSelectLiquid(row.ticker); }}>
+                          Use as Liquid
+                        </button>
+                      ) : null}
+                      {canSelectIlliquid ? (
+                        <button type="button" className="screener-action-btn illiquid" onClick={(event) => { event.stopPropagation(); onSelectIlliquid(row.ticker); }}>
+                          Use as Illiquid
+                        </button>
+                      ) : null}
+                      {!canSelectLiquid && !canSelectIlliquid ? <span className="screener-muted">Middle 50%</span> : null}
                     </td>
                   </tr>
                 );

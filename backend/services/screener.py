@@ -151,15 +151,24 @@ def _serialize_selection(row: dict[str, Any], kind: str) -> dict[str, Any]:
     }
 
 
+def _format_amihud(value: float) -> str:
+    if not value:
+        return "0"
+    if abs(value) < 0.0001:
+        mantissa, exponent = f"{value:.2e}".split("e")
+        return f"{float(mantissa):.2f} x 10^{int(exponent)}"
+    return f"{value:.6f}"
+
+
 def _build_justification(liquid: dict[str, Any], illiquid: dict[str, Any], total_count: int) -> str:
     turnover_gap = liquid["avg_daily_turnover_cr"] / illiquid["avg_daily_turnover_cr"] if illiquid["avg_daily_turnover_cr"] else 0.0
     amihud_gap = liquid["amihud"] and illiquid["amihud"] / liquid["amihud"] if liquid["amihud"] else 0.0
     return (
         f"{liquid['ticker']} (Rank {liquid['rank']}/{total_count}) selected as liquid stock with "
-        f"₹{liquid['avg_daily_turnover_cr']:.1f}Cr avg daily turnover and Amihud ratio of {liquid['amihud']:.4f}, "
+        f"₹{liquid['avg_daily_turnover_cr']:.1f}Cr avg daily turnover and Amihud ratio of {_format_amihud(liquid['amihud'])}, "
         f"placing it in the top 25% of NIFTY 50 by liquidity. {illiquid['ticker']} "
         f"(Rank {illiquid['rank']}/{total_count}) selected as illiquid with ₹{illiquid['avg_daily_turnover_cr']:.1f}Cr "
-        f"turnover and Amihud {illiquid['amihud']:.4f} (bottom 25%). The {turnover_gap:.1f}× turnover gap "
+        f"turnover and Amihud {_format_amihud(illiquid['amihud'])} (bottom 25%). The {turnover_gap:.1f}× turnover gap "
         f"and {amihud_gap:.1f}× Amihud gap confirm strong liquidity contrast for comparative analysis."
     )
 
