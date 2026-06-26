@@ -183,9 +183,15 @@ def _generate_stock_fallback(ticker: str, start_date: str, end_date: str) -> dic
     }
 
 
+_history_cache: dict[str, tuple[str, dict]] = {}  # ticker → (cache_date, response)
+
 def fetch_stock_history(ticker: str, start_date: str, end_date: str) -> dict:
-    _require_yfinance()
     symbol = ticker if ticker.endswith(".NS") else f"{ticker}.NS"
+    today = datetime.utcnow().strftime("%Y-%m-%d")
+    cached_date, cached_data = _history_cache.get(symbol) or (None, None)
+    if cached_date == today and cached_data is not None:
+        return cached_data
+    _require_yfinance()
 
     def _fetch_yfinance_history() -> tuple[list[dict], bool]:
         try:
@@ -229,7 +235,7 @@ def fetch_stock_history(ticker: str, start_date: str, end_date: str) -> dict:
         "previous_close": nse_quote["previous_close"] if nse_quote and nse_quote.get("previous_close") is not None else previous_close,
         "volume": nse_quote["volume"] if nse_quote and nse_quote.get("volume") is not None else last["volume"],
     }
-    return {
+    result = {
         "ticker": symbol,
         "provider": nse_provider or "yfinance",
         "source": "backend_live",
@@ -248,6 +254,8 @@ def fetch_stock_history(ticker: str, start_date: str, end_date: str) -> dict:
             for row in history_rows
         ],
     }
+    _history_cache[symbol] = (today, result)
+    return result
 
 
 def fetch_option_chain(ticker: str, current_price: float, hist_volatility: float, risk_free_rate: float) -> dict:
