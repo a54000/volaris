@@ -203,13 +203,13 @@ def fetch_live_option_quotes_angel(symbol: str, definitions: list[dict]) -> Ange
             req_type = str(definition["option_type"])
             req_maturity = int(definition["maturity_days"])
             req_strike = float(definition["strike"])
-            candidates = [
-                e for e in cached
-                if e["option_type"] == req_type and abs(e["strike"] - req_strike) < 0.01
-            ]
-            if not candidates:
+            candidates_by_type = [e for e in cached if e["option_type"] == req_type]
+            if not candidates_by_type:
                 continue
-            best = min(candidates, key=lambda e: abs(e["maturity_days"] - req_maturity))
+            best = min(
+                candidates_by_type,
+                key=lambda e: abs(e["maturity_days"] - req_maturity) * 100 + abs(e["strike"] - req_strike),
+            )
             key = (req_type, req_maturity, req_strike)
             results[key] = AngelQuote(**{k: v for k, v in best.items() if k != "key"})
         if results:
