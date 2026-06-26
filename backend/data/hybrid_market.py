@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 import importlib
 
@@ -180,32 +181,41 @@ def _generate_stock_fallback(ticker: str, start_date: str, end_date: str) -> dic
 def fetch_stock_history(ticker: str, start_date: str, end_date: str) -> dict:
     _require_yfinance()
     symbol = ticker if ticker.endswith(".NS") else f"{ticker}.NS"
-    try:
-        history = yf.Ticker(symbol).history(start=start_date, end=end_date, interval="1d", auto_adjust=False)
-    except Exception:
-        history = type("Empty", (), {"empty": True})()
-    if hasattr(history, "empty") and history.empty:
+
+    def _fetch_yfinance_history() -> tuple[list[dict], bool]:
+        try:
+            history = yf.Ticker(symbol).history(start=start_date, end=end_date, interval="1d", auto_adjust=False)
+        except Exception:
+            return [], True
+        if hasattr(history, "empty") and history.empty:
+            return [], True
+        history = history.dropna(subset=["Close"])
+        rows = [
+            {
+                "date": index.strftime("%Y-%m-%d"),
+                "open": float(row["Open"]),
+                "high": float(row["High"]),
+                "low": float(row["Low"]),
+                "close": float(row["Close"]),
+                "volume": int(row["Volume"]) if row["Volume"] == row["Volume"] else 0,
+            }
+            for index, row in history.iterrows()
+            if row["Close"] == row["Close"]
+        ]
+        return rows, False
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        yf_future = pool.submit(_fetch_yfinance_history)
+        nse_future = pool.submit(_fetch_nse_stock_quote, symbol)
+
+        history_rows, history_failed = yf_future.result()
+        nse_quote, nse_provider = nse_future.result()
+
+    if history_failed or not history_rows:
         return _generate_stock_fallback(ticker, start_date, end_date)
 
-    history = history.dropna(subset=["Close"])
-    rows = [
-        {
-            "date": index.strftime("%Y-%m-%d"),
-            "open": float(row["Open"]),
-            "high": float(row["High"]),
-            "low": float(row["Low"]),
-            "close": float(row["Close"]),
-            "volume": int(row["Volume"]) if row["Volume"] == row["Volume"] else 0,
-        }
-        for index, row in history.iterrows()
-        if row["Close"] == row["Close"]
-    ]
-    if not rows:
-        return _generate_stock_fallback(ticker, start_date, end_date)
-
-    last = rows[-1]
-    previous_close = rows[-2]["close"] if len(rows) > 1 else last["close"]
-    nse_quote, nse_provider = _fetch_nse_stock_quote(symbol)
+    last = history_rows[-1]
+    previous_close = history_rows[-2]["close"] if len(history_rows) > 1 else last["close"]
     live_quote = {
         "open": nse_quote["open"] if nse_quote and nse_quote.get("open") is not None else last["open"],
         "high": nse_quote["high"] if nse_quote and nse_quote.get("high") is not None else last["high"],
@@ -230,7 +240,7 @@ def fetch_stock_history(ticker: str, start_date: str, end_date: str) -> dict:
                 "close": row["close"],
                 "volume": row["volume"],
             }
-            for row in rows
+            for row in history_rows
         ],
     }
 
