@@ -18,6 +18,19 @@ import json
 import os
 import time
 from datetime import datetime, timezone
+from pathlib import Path
+
+# Auto-load .env from project root
+HERE = Path(__file__).resolve().parent
+PROJECT_ROOT = HERE.parent
+ENV_PATH = PROJECT_ROOT / ".env"
+if ENV_PATH.exists():
+    for line in ENV_PATH.read_text(encoding="utf-8").splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or "=" not in stripped:
+            continue
+        key, value = stripped.split("=", 1)
+        os.environ.setdefault(key.strip(), value.strip().strip('"').strip("'"))
 
 # ---------------------------------------------------------------------------
 # Config
