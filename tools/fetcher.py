@@ -218,6 +218,37 @@ def fetch_stock_quotes() -> dict[str, dict]:
 
 
 # ---------------------------------------------------------------------------
+# NSE option chain (fetches current strikes — not blocked from India)
+# ---------------------------------------------------------------------------
+NSE_BASE_URL = "https://www.nseindia.com"
+NSE_OPTION_CHAIN_URL = f"{NSE_BASE_URL}/api/option-chain-equities"
+NSE_HEADERS = {
+    "accept": "application/json, text/plain, */*",
+    "accept-language": "en-US,en;q=0.9",
+    "referer": f"{NSE_BASE_URL}/option-chain",
+    "user-agent": (
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/126.0.0.0 Safari/537.36"
+    ),
+}
+
+
+def fetch_nse_option_chain(symbol: str) -> dict | None:
+    import httpx
+    bare = symbol.replace(".NS", "")
+    try:
+        with httpx.Client(headers=NSE_HEADERS, timeout=15.0, follow_redirects=True) as client:
+            client.get(f"{NSE_BASE_URL}/option-chain", headers=NSE_HEADERS)
+            resp = client.get(NSE_OPTION_CHAIN_URL, params={"symbol": bare})
+            resp.raise_for_status()
+            return resp.json()
+    except Exception as exc:
+        print(f"    NSE option chain failed: {exc}")
+        return None
+
+
+# ---------------------------------------------------------------------------
 # Push to VM
 # ---------------------------------------------------------------------------
 def push_to_vm(payload: dict) -> bool:
@@ -271,20 +302,35 @@ def main() -> None:
             else:
                 print(f"     0 quotes (skipped)")
 
-    # 3. Assemble payload
+    # 3. NSE option chains (has correct current strikes)
+    print()
+    print("3. NSE option chains ...")
+    nse_chains: dict[str, dict] = {}
+    for symbol in TRACKED_SYMBOLS:
+        print(f"   [{symbol}] ...")
+        chain = fetch_nse_option_chain(symbol)
+        if chain:
+            nse_chains[symbol] = chain
+            print(f"     OK")
+        else:
+            print(f"     FAILED")
+
+    # 4. Assemble payload
     payload: dict = {}
     if stock_quotes:
         payload["stock_quotes"] = stock_quotes
     if angel_quotes:
         payload["angel_quotes"] = angel_quotes
+    if nse_chains:
+        payload["option_chains"] = nse_chains
     if FETCHER_TOKEN:
         payload["token"] = FETCHER_TOKEN
 
-    if not any(k in payload for k in ("stock_quotes", "angel_quotes")):
+    if not any(k in payload for k in ("stock_quotes", "angel_quotes", "option_chains")):
         print("\nNothing to push.")
         return
 
-    # 4. Push
+    # 5. Push
     print(f"\n3. Pushing {len(payload)} payload keys to VM ...")
     push_to_vm(payload)
     print("\nDone.")
