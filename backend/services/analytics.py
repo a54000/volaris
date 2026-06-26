@@ -144,6 +144,19 @@ def _build_options_analytics_uncached(months: int = 6, risk_free_rate: float = 0
                 max(garch_vol, 1e-6),
             )
             live_quote = live_quotes.get((definition["option_type"], definition["maturity_days"]))
+            market_iv = (live_quote.implied_volatility / 100.0) if live_quote and live_quote.implied_volatility is not None else None
+            if market_iv is not None:
+                market_quote = black_scholes_price(
+                    definition["option_type"], spot, definition["strike"],
+                    time_to_expiry, risk_free_rate, market_iv,
+                )
+                market_greeks = black_scholes_greeks(
+                    definition["option_type"], spot, definition["strike"],
+                    time_to_expiry, risk_free_rate, market_iv,
+                )
+            else:
+                market_quote = None
+                market_greeks = None
             contracts.append(
                 {
                     "label": definition["label"],
@@ -154,13 +167,14 @@ def _build_options_analytics_uncached(months: int = 6, risk_free_rate: float = 0
                     "market_price": round(live_quote.last_price, 4) if live_quote and live_quote.last_price is not None else round(garch_quote.price * 1.02, 4),
                     "market_price_source": live_quote.source if live_quote is not None else "proxy",
                     "market_price_status": live_quote.source_status if live_quote is not None else "fallback",
-                    "market_implied_volatility": round(live_quote.implied_volatility / 100.0, 6) if live_quote and live_quote.implied_volatility is not None else None,
+                    "market_implied_volatility": round(market_iv, 6) if market_iv is not None else None,
                     "market_volume": live_quote.volume if live_quote is not None else None,
                     "market_open_interest": live_quote.open_interest if live_quote is not None else None,
                     "historical_volatility": round(historical_vol, 6),
                     "garch_volatility": round(garch_vol, 6),
                     "bsm_historical_vol_price": round(hist_quote.price, 4),
                     "bsm_garch_vol_price": round(garch_quote.price, 4),
+                    "bsm_market_vol_price": round(market_quote.price, 4) if market_quote is not None else None,
                     "greeks_historical_vol": {
                         "delta": round(hist_greeks.delta, 6),
                         "gamma": round(hist_greeks.gamma, 6),
@@ -175,6 +189,13 @@ def _build_options_analytics_uncached(months: int = 6, risk_free_rate: float = 0
                         "theta": round(garch_greeks.theta, 6),
                         "rho": round(garch_greeks.rho, 6),
                     },
+                    "greeks_market_vol": {
+                        "delta": round(market_greeks.delta, 6),
+                        "gamma": round(market_greeks.gamma, 6),
+                        "vega": round(market_greeks.vega, 6),
+                        "theta": round(market_greeks.theta, 6),
+                        "rho": round(market_greeks.rho, 6),
+                    } if market_greeks is not None else None,
                 }
             )
 

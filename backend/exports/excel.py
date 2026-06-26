@@ -30,6 +30,7 @@ def build_workbook_bytes(months: int = 6, risk_free_rate: float = 0.07) -> bytes
             "GARCH IV",
             "BSM Hist",
             "BSM GARCH",
+            "BSM Market IV",
             "Hist Delta",
             "Hist Gamma",
             "Hist Vega",
@@ -40,12 +41,18 @@ def build_workbook_bytes(months: int = 6, risk_free_rate: float = 0.07) -> bytes
             "GARCH Vega",
             "GARCH Theta",
             "GARCH Rho",
+            "Market Delta",
+            "Market Gamma",
+            "Market Vega",
+            "Market Theta",
+            "Market Rho",
         ]
     )
     for cell in summary_sheet[1]:
         cell.font = Font(bold=True)
     for symbol_block in options_data["symbols"]:
         for contract in symbol_block["contracts"]:
+            market_greeks = contract.get("greeks_market_vol") or {}
             summary_sheet.append(
                 [
                     symbol_block["symbol"],
@@ -59,6 +66,7 @@ def build_workbook_bytes(months: int = 6, risk_free_rate: float = 0.07) -> bytes
                     contract["garch_volatility"],
                     contract["bsm_historical_vol_price"],
                     contract["bsm_garch_vol_price"],
+                    contract.get("bsm_market_vol_price"),
                     contract["greeks_historical_vol"]["delta"],
                     contract["greeks_historical_vol"]["gamma"],
                     contract["greeks_historical_vol"]["vega"],
@@ -69,6 +77,11 @@ def build_workbook_bytes(months: int = 6, risk_free_rate: float = 0.07) -> bytes
                     contract["greeks_garch_vol"]["vega"],
                     contract["greeks_garch_vol"]["theta"],
                     contract["greeks_garch_vol"]["rho"],
+                    market_greeks.get("delta"),
+                    market_greeks.get("gamma"),
+                    market_greeks.get("vega"),
+                    market_greeks.get("theta"),
+                    market_greeks.get("rho"),
                 ]
             )
 
