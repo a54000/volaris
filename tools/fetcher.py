@@ -188,32 +188,32 @@ def fetch_stock_quotes() -> dict[str, dict]:
     import yfinance as yf
     quotes: dict[str, dict] = {}
     for symbol in SYMBOLS:
-    try:
-        ticker = yf.Ticker(symbol)
-        hist = ticker.history(period="1d", interval="1d", auto_adjust=False)
-        bare = symbol.replace(".NS", "")
-        if hist.empty:
-            info = ticker.fast_info
-            quotes[bare] = {
-                "close": info.last_price if hasattr(info, "last_price") else 0,
-                "open": info.day_open if hasattr(info, "day_open") else 0,
-                "high": info.day_high if hasattr(info, "day_high") else 0,
-                "low": info.day_low if hasattr(info, "day_low") else 0,
-                "volume": 0,
-                "previous_close": info.previous_close if hasattr(info, "previous_close") else 0,
-            }
-        else:
-            row = hist.iloc[-1]
-            quotes[bare] = {
-                "open": float(row.get("Open", 0) or 0),
-                "high": float(row.get("High", 0) or 0),
-                "low": float(row.get("Low", 0) or 0),
-                "close": float(row.get("Close", 0) or 0),
-                "volume": int(row.get("Volume", 0) or 0),
-                "previous_close": float(hist["Close"].iloc[-2]) if len(hist) > 1 else float(row.get("Close", 0) or 0),
-            }
-    except Exception as exc:
-        print(f"    {symbol}: {exc}")
+        try:
+            ticker = yf.Ticker(symbol)
+            hist = ticker.history(period="1d", interval="1d", auto_adjust=False)
+            bare = symbol.replace(".NS", "")
+            if hist.empty:
+                info = ticker.fast_info
+                quotes[bare] = {
+                    "close": info.last_price if hasattr(info, "last_price") else 0,
+                    "open": info.day_open if hasattr(info, "day_open") else 0,
+                    "high": info.day_high if hasattr(info, "day_high") else 0,
+                    "low": info.day_low if hasattr(info, "day_low") else 0,
+                    "volume": 0,
+                    "previous_close": info.previous_close if hasattr(info, "previous_close") else 0,
+                }
+            else:
+                row = hist.iloc[-1]
+                quotes[bare] = {
+                    "open": float(row.get("Open", 0) or 0),
+                    "high": float(row.get("High", 0) or 0),
+                    "low": float(row.get("Low", 0) or 0),
+                    "close": float(row.get("Close", 0) or 0),
+                    "volume": int(row.get("Volume", 0) or 0),
+                    "previous_close": float(hist["Close"].iloc[-2]) if len(hist) > 1 else float(row.get("Close", 0) or 0),
+                }
+        except Exception as exc:
+            print(f"    {symbol}: {exc}")
     return quotes
 
 
