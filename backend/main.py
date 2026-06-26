@@ -190,3 +190,15 @@ def download_docx(months: int = Query(default=6, ge=1, le=24), risk_free_rate: f
 @app.post("/api/cache/refresh")
 def refresh_cache(months: int | None = Query(default=None, ge=1, le=24)) -> dict[str, str]:
     return clear_analytics_cache(months=months)
+
+
+@app.post("/api/fetcher/ingest")
+def fetcher_ingest(payload: dict) -> dict:
+    token = payload.get("token", "")
+    expected = os.getenv("FETCHER_TOKEN", "")
+    if expected and token != expected:
+        raise HTTPException(status_code=401, detail="invalid_token")
+    from backend.data.fetcher_cache import save_ingested
+    counts = save_ingested(payload)
+    logger.info("fetcher_ingest: saved %s", counts)
+    return {"status": "ok", "saved": counts}
